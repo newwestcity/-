@@ -26,6 +26,22 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
         with:
           python-version: '3.12'
+      - name: 读取此密钥可用的 GPT 型号
+        run: python scripts/check_connection.py --mode catalog --report .local/model-catalog.json
+      - name: 使用目录中列出的型号
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          from scripts.check_connection import GPT_CANDIDATES
+          model = json.loads(Path('.local/model-catalog.json').read_text())['suggested_model']
+          if model not in GPT_CANDIDATES:
+              raise SystemExit('No supported GPT model was listed.')
+          with open(os.environ['GITHUB_ENV'], 'a', encoding='utf-8') as stream:
+              stream.write('DIGEST_MODEL=' + model + '\n')
+          print('::notice title=Selected API model::' + model)
+          PY
       - name: 原始示例的一次普通对话
         run: python scripts/check_connection.py --mode chat
       - name: 显示普通 API 验证结果
@@ -37,6 +53,8 @@ jobs:
           import os
           from pathlib import Path
           report = Path('.local/connection-report.json')
+          if not report.exists():
+              report = Path('.local/model-catalog.json')
           if report.exists():
               value = json.loads(report.read_text(encoding='utf-8'))
               rendered = html.escape(json.dumps(value, ensure_ascii=False, indent=2))
@@ -55,6 +73,7 @@ jobs:
                               'Model configuration is invalid.': 'model_configuration_invalid',
                               'Connection failed; no retry was attempted.': 'connection_failed',
                               'Response was not a supported JSON object.': 'response_format_invalid',
+                              'No supported GPT model was listed.': 'no_compatible_model',
                               'HTTP request was not accepted.': 'http_rejected'}.get(value.get('error'), 'unclassified')
               finish = value.get('finish_reason')
               finish = finish if isinstance(finish, str) and finish in {'stop', 'length', 'content_filter', 'tool_calls', 'function_call'} else 'unavailable'

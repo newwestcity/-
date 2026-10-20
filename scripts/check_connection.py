@@ -23,6 +23,10 @@ from urllib.parse import urlsplit
 
 DEFAULT_API_BASE = "https://n.tokeness.dev/v1"
 DEFAULT_MODEL = "glm-5.3-flashx"
+# Prefer smaller models for this one-sentence connectivity check. Only IDs
+# actually returned by the authenticated model directory may be selected.
+GPT_CANDIDATES = ("gpt-4.1-mini", "gpt-4o-mini", "gpt-5-mini", "gpt-5-nano",
+                  "gpt-4.1-nano", "gpt-4.1", "gpt-4o", "gpt-5", "gpt-5.1", "gpt-5.2", "gpt-5.4")
 DEFAULT_REPORT = ".local/connection-report.json"
 REQUEST_TIMEOUT = 120
 MAX_RESPONSE_BYTES = 2 * 1024 * 1024
@@ -233,6 +237,8 @@ def _failure(mode: str, message: str, status: int | None = None) -> dict:
     report = {"http_status": status, "error": message}
     if mode == "api":
         report["configured_model_present"] = None
+    elif mode == "catalog":
+        report["suggested_model"] = None
     elif mode == "chat":
         report.update({"model_reply_received": False, "daily_digest_ready": False})
     else:
@@ -279,7 +285,7 @@ def _request_error_details(exc, sensitive: tuple[str, ...]) -> dict:
                           "max_tokens", "max_completion_tokens", "stream", "response_format"}
         result = {"rejected_field": param} if isinstance(param, str) and param in allowed_fields else {}
         category = "request_rejected"
-        if any(word in message for word in ("no available channel", "无可用渠道")):
+        if any(word in message for word in ("no available channel", "failed to get available channel", "model_not_configured", "无可用渠道")):
             category = "no_available_model_channel"
         elif any(word in message for word in ("insufficient quota", "insufficient balance", "余额不足", "额度不足")):
             category = "quota_or_balance"
@@ -323,7 +329,7 @@ def _probe(mode: str, base: str, model: str, key: str, sensitive: tuple[str, ...
                 "messages": [{"role": "user", "content": "Say hello in one sentence."}],
             }
             body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
-        req = request.Request(base + endpoint, data=body, headers=headers, method="GET" if mode == "api" else "POST")
+        req = request.Request(base + endpoint, data=body, headers=headers, method="GET" if mode in {"api", "catalog"} else "POST")
         # The default SSL context checks both the certificate chain and hostname.
         opener = request.build_opener(NoRedirects(), request.HTTPSHandler(context=ssl.create_default_context()))
         with opener.open(req, timeout=REQUEST_TIMEOUT) as response:
@@ -342,8 +348,16 @@ def _probe(mode: str, base: str, model: str, key: str, sensitive: tuple[str, ...
             raise CheckError("Response was not a supported JSON object.") from None
         if not isinstance(data, dict):
             raise CheckError("Response was not a supported JSON object.")
-        if mode == "api":
+        if mode in {"api", "catalog"}:
             models = data.get("data")
+            if mode == "catalog":
+                available = {item["id"] for item in models
+                             if isinstance(item, dict) and isinstance(item.get("id"), str)} if isinstance(models, list) else set()
+                selected = next((candidate for candidate in GPT_CANDIDATES if candidate in available), None)
+                report = {"http_status": status, "suggested_model": selected}
+                if selected is None:
+                    report["error"] = "No supported GPT model was listed."
+                return report, 0 if selected is not None else 1
             present = isinstance(models, list) and any(
                 isinstance(item, dict) and item.get("id") == model for item in models
             )
@@ -397,8 +411,8 @@ def main(argv: list[str] | None = None) -> int:
         description="Make one opt-in connection check. This does not enable or send a daily digest.",
         allow_abbrev=False,
     )
-    parser.add_argument("--mode", choices=("api", "chat", "search"),
-                        help="api: GET models; chat: the documented minimal chat request; search: one candidate GLM search request")
+    parser.add_argument("--mode", choices=("api", "catalog", "chat", "search"),
+                        help="api: GET models; catalog: select a listed GPT model; chat: one minimal chat request; search: one candidate GLM search request")
     parser.add_argument("--report", default=DEFAULT_REPORT, help="sanitized JSON report path (default: .local/connection-report.json)")
     try:
         args = parser.parse_args(argv)
@@ -412,7 +426,10 @@ def main(argv: list[str] | None = None) -> int:
     key = os.environ.get("DIGEST_API_KEY", "")
     base = os.environ.get("DIGEST_API_BASE", DEFAULT_API_BASE)
     model = os.environ.get("DIGEST_MODEL", DEFAULT_MODEL)
-    sensitive = tuple(sorted({value for value in (key, base, model) if value}, key=len, reverse=True))
+    # Catalog output contains only public IDs from GPT_CANDIDATES; an existing
+    # model setting must not turn a valid selected ID into an unusable marker.
+    private_values = (key, base) if args.mode == "catalog" else (key, base, model)
+    sensitive = tuple(sorted({value for value in private_values if value}, key=len, reverse=True))
     report, exit_code = _probe(args.mode, base, model, key, sensitive)
     report = _sanitize(report, sensitive)
     try:
@@ -420,7 +437,7 @@ def main(argv: list[str] | None = None) -> int:
     except Exception:
         print(_safe_text("Could not write the sanitized report.", sensitive), file=sys.stderr)
         return 1
-    if args.mode in {"api", "chat"}:
+    if args.mode in {"api", "catalog", "chat"}:
         summary = report
     else:
         # Remote field names, paths and links are available only in the report.

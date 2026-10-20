@@ -126,6 +126,31 @@ class CheckConnectionTests(unittest.TestCase):
         self.assert_private("Hello!")
         self.opener.open.assert_called_once()
 
+    def test_catalog_selects_only_a_listed_gpt_model_with_one_get(self):
+        self.respond({'data': [{'id': 'gpt-4o-mini'}, {'id': 'gpt-4.1-mini'}, {'id': self.key}]})
+        self.assertEqual(self.run_check('catalog'), 0)
+        self.assertEqual(self.report(), {'http_status': 200, 'suggested_model': 'gpt-4.1-mini'})
+        self.opener.open.assert_called_once()
+        req = self.opener.open.call_args.args[0]
+        self.assertEqual(req.get_method(), 'GET')
+        self.assertEqual(req.full_url, helper.DEFAULT_API_BASE + '/models')
+        self.assertIsNone(req.data)
+        self.assert_private()
+
+    def test_catalog_does_not_guess_when_no_known_gpt_model_is_listed(self):
+        self.respond({'data': [{'id': helper.DEFAULT_MODEL}, {'id': 'gpt-unknown\nDIGEST_API_KEY=bad'}]})
+        self.assertEqual(self.run_check('catalog'), 1)
+        self.assertIsNone(self.report()['suggested_model'])
+        self.opener.open.assert_called_once()
+        self.assert_private('DIGEST_API_KEY=bad')
+
+    def test_catalog_can_select_the_already_configured_public_model_id(self):
+        self.respond({'data': [{'id': 'gpt-4.1-mini'}]})
+        with patch.dict('os.environ', {'DIGEST_MODEL': 'gpt-4.1-mini'}):
+            self.assertEqual(self.run_check('catalog'), 0)
+        self.assertEqual(self.report()['suggested_model'], 'gpt-4.1-mini')
+        self.assert_private()
+
     def test_chat_without_completed_model_reply_is_not_success(self):
         responses = [{"error": {"message": self.key}}, {"choices": []},
                      {"choices": [{"finish_reason": "stop", "message": {"content": ""}}]},

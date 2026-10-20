@@ -10,7 +10,7 @@
 
 ## 先验证 Tokeness
 
-普通聊天调用与搜索能力分开验证。[普通 API 验证](https://github.com/newwestcity/-/actions/workflows/check-chat.yml)使用已经配置的 `DIGEST_API_KEY`，按用户提供的原始示例发送一次 `model + 单条 user 消息` 请求，不加搜索工具或其他模型参数。新增或修改该验证工作流时会触发一次，也可手动执行；这会调用模型，可能计费。只有收到非空且未被截断的模型回复才判定成功。它不验证 X 搜索、不发邮件、不启用日程。
+普通聊天调用与搜索能力分开验证。[普通 API 验证](https://github.com/newwestcity/-/actions/workflows/check-chat.yml)使用已经配置的 `DIGEST_API_KEY`，先读取 `/models`，优先从固定候选中选择目录里实际列出的较小 GPT 型号，再发送一次 `model + 单条 user 消息` 请求，不加搜索工具或其他模型参数。此密钥的 GPT 分组曾拒绝示例中的 GLM 型号，返回 `model_not_configured`。新增或修改该验证工作流时会触发一次，也可手动执行；这会调用模型，可能计费。只有收到非空且正常结束的模型回复才判定成功。它不验证 X 搜索、不发邮件、不启用日程。
 
 此步骤在 GitHub 自己的执行机器上运行，与 Codex 开发环境的保存、发布分开。当前 Codex 执行机器仍无法连到 `n.tokeness.dev`，请求被网络代理拒绝；这不能判断 Tokeness 本身或密钥是否正常。
 
