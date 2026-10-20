@@ -157,6 +157,40 @@ class CheckConnectionTests(unittest.TestCase):
         self.assertEqual(self.report()['suggested_model'], 'gpt-6-luna')
         self.opener.open.assert_called_once()
 
+    def test_responses_search_requires_completed_tool_and_independent_post_sources(self):
+        self.respond({'status': 'completed', 'output': [
+            {'type': 'web_search_call', 'status': 'completed', 'action': {'sources': [
+                {'url': 'https://twitter.com/author/status/123?s=20'},
+                {'url': 'https://x.com/author/status/123'},
+            ]}},
+            {'type': 'message', 'content': [{'type': 'output_text', 'text': self.key,
+                                            'annotations': [{'type': 'url_citation', 'url': 'https://x.com/second/status/456'}]}]},
+        ]})
+        self.assertEqual(self.run_check('responses-search'), 0)
+        self.assertEqual(self.report()['x_source_count'], 2)
+        self.assertTrue(self.report()['search_completed'])
+        self.assertFalse(self.report()['daily_digest_ready'])
+        self.opener.open.assert_called_once()
+        req = self.opener.open.call_args.args[0]
+        self.assertEqual(req.full_url, helper.DEFAULT_API_BASE + '/responses')
+        self.assertEqual(req.get_method(), 'POST')
+        self.assertEqual(json.loads(req.data)['max_tool_calls'], 1)
+        self.assert_private()
+
+    def test_responses_search_does_not_trust_generated_urls_or_unfinished_tools(self):
+        for data in [
+            {'status': 'completed', 'output': [{'type': 'message', 'content': [
+                {'type': 'output_text', 'text': 'https://x.com/author/status/123'}]}]},
+            {'status': 'incomplete', 'output': [{'type': 'web_search_call', 'status': 'completed',
+                                               'action': {'sources': [{'url': 'https://x.com/author/status/123'}]}}]},
+            {'status': 'completed', 'output': [{'type': 'web_search_call', 'status': 'completed',
+                                               'action': {'sources': [{'url': 'https://example.test/article'}]}}]},
+        ]:
+            self.respond(data)
+            self.assertEqual(self.run_check('responses-search'), 1)
+            self.assertEqual(self.report()['x_source_count'], 0)
+        self.assert_private('https://x.com/author/status/123')
+
     def test_chat_without_completed_model_reply_is_not_success(self):
         responses = [{"error": {"message": self.key}}, {"choices": []},
                      {"choices": [{"finish_reason": "stop", "message": {"content": ""}}]},

@@ -12,6 +12,10 @@
 
 普通聊天调用与搜索能力分开验证。[普通 API 验证](https://github.com/newwestcity/-/actions/workflows/check-chat.yml)使用已经配置的 `DIGEST_API_KEY`，先读取 `/models`，优先从固定候选中选择目录里实际列出的较小 GPT 型号，再发送一次 `model + 单条 user 消息` 请求，不加搜索工具或其他模型参数。此密钥的 GPT 分组曾拒绝示例中的 GLM 型号，返回 `model_not_configured`。新增或修改该验证工作流时会触发一次，也可手动执行；这会调用模型，可能计费。只有收到非空且正常结束的模型回复才判定成功。它不验证 X 搜索、不发邮件、不启用日程。
 
+`https://n.tokeness.dev/v1` 与 `gpt-6-luna` 的普通对话已[实测成功](https://github.com/newwestcity/-/actions/runs/39462398796)：HTTP 200、非空回复、`finish_reason=stop`。这把密钥的目录列出了 GPT 6 等型号，未列出先前预设的 GPT 4/5 mini 型号。
+
+[X 搜索验证](https://github.com/newwestcity/-/actions/workflows/check-x-search.yml)独立测试一次标准 Responses `web_search`（最多一次工具调用），只有完整搜索记录与独立 X 原帖引用同时存在才通过；只看到聊天正文中的链接不会通过。同时仅显示邮件变量/授权码是否存在，不公开它们的值、不连接 SMTP。此验证不启用每日发送。
+
 此步骤在 GitHub 自己的执行机器上运行，与 Codex 开发环境的保存、发布分开。当前 Codex 执行机器仍无法连到 `n.tokeness.dev`，请求被网络代理拒绝；这不能判断 Tokeness 本身或密钥是否正常。
 
 在 GitHub 仓库 **Settings → Secrets and variables → Actions → New repository secret** 中，将可用的 API 密钥安全保存为 `DIGEST_API_KEY`。再打开 [验证 Tokeness 接口](https://github.com/newwestcity/-/actions/workflows/check-connection.yml)，点 **Run workflow**：

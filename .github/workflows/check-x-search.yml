@@ -1,0 +1,88 @@
+name: 验证 X 搜索接口
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/check-x-search.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  search:
+    if: github.ref_name == github.event.repository.default_branch
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      DIGEST_API_BASE: https://n.tokeness.dev/v1
+      DIGEST_MODEL: gpt-6-luna
+      DIGEST_API_KEY: ${{ secrets.DIGEST_API_KEY }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        with:
+          python-version: '3.12'
+      - name: 一次 Responses 搜索验证
+        run: python scripts/check_connection.py --mode responses-search
+      - name: 显示搜索验证结果
+        if: always()
+        run: |
+          python - <<'PY'
+          import html
+          import json
+          import os
+          from pathlib import Path
+
+          value = {}
+          try:
+              loaded = json.loads(Path('.local/connection-report.json').read_text(encoding='utf-8'))
+              if isinstance(loaded, dict):
+                  value = loaded
+          except (OSError, ValueError):
+              pass
+          status = value.get('http_status')
+          status = status if type(status) is int and 100 <= status <= 599 else 'unavailable'
+          count = value.get('x_source_count')
+          count = count if type(count) is int and count >= 0 else 0
+          completed = value.get('search_completed') is True
+          summary = {'http_status': status, 'search_completed': completed,
+                     'x_source_count': count, 'daily_digest_ready': False}
+          print('::notice title=X search diagnostic::http_status=' + str(status)
+                + '; search_completed=' + str(completed).lower()
+                + '; x_source_count=' + str(count) + '; daily_digest_ready=false')
+          hint = value.get('provider_error_hint')
+          if isinstance(hint, str) and hint:
+              summary['provider_error_hint'] = hint[:500]
+              escaped = hint[:500].replace('%', '%25').replace('\r', '%0D').replace('\n', '%0A')
+              print('::notice title=Provider error (redacted)::' + escaped)
+          rendered = html.escape(json.dumps(summary, ensure_ascii=False, indent=2))
+          with open(os.environ['GITHUB_STEP_SUMMARY'], 'a', encoding='utf-8') as stream:
+              stream.write('<h2>X 搜索验证结果</h2><pre>' + rendered + '</pre>')
+          PY
+      - name: 显示邮件配置是否存在
+        if: always()
+        env:
+          SMTP_USERNAME: ${{ vars.SMTP_USERNAME }}
+          SMTP_AUTH_CODE: ${{ secrets.SMTP_AUTH_CODE }}
+          MAIL_TO: ${{ vars.MAIL_TO }}
+        run: |
+          python - <<'PY'
+          import html
+          import json
+          import os
+
+          configured = {
+              'smtp_username_configured': bool(os.environ.get('SMTP_USERNAME', '').strip()),
+              'smtp_auth_code_configured': bool(os.environ.get('SMTP_AUTH_CODE', '').strip()),
+              'mail_to_configured': bool(os.environ.get('MAIL_TO', '').strip()),
+          }
+          print('::notice title=Mail configuration::'
+                + '; '.join(name + '=' + str(value).lower() for name, value in configured.items()))
+          rendered = html.escape(json.dumps(configured, ensure_ascii=False, indent=2))
+          with open(os.environ['GITHUB_STEP_SUMMARY'], 'a', encoding='utf-8') as stream:
+              stream.write('<h2>邮件配置是否存在</h2><pre>' + rendered + '</pre>')
+          PY

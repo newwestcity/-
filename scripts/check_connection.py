@@ -172,6 +172,55 @@ def _post_url(value) -> str | None:
     return f"https://x.com/{match.group(1)}/status/{match.group(2)}"
 
 
+def _responses_payload(model: str) -> dict:
+    return {
+        "model": model, "store": False,
+        "input": "请实际搜索最近48小时 X/Twitter 上一条有学习价值的 AI 或科技原帖，给出原帖引用；找不到就说明，不要编造链接。",
+        "tools": [{"type": "web_search", "filters": {"allowed_domains": ["x.com", "twitter.com"]}}],
+        "tool_choice": "required", "include": ["web_search_call.action.sources"],
+        "max_tool_calls": 1, "max_output_tokens": 1500,
+    }
+
+
+def _responses_report(data: dict, status: int, sensitive: tuple[str, ...]) -> tuple[dict, int]:
+    output = data.get("output")
+    output = output if isinstance(output, list) else []
+    searches = [item for item in output if isinstance(item, dict)
+                and item.get("type") == "web_search_call" and item.get("status") == "completed"]
+    completed = data.get("status") == "completed" and bool(searches)
+    urls = set()
+
+    def add_url(value):
+        url = _post_url(value)
+        if url and not any(secret in url for secret in sensitive):
+            urls.add(url)
+
+    for item in searches:
+        action = item.get("action")
+        sources = action.get("sources") if isinstance(action, dict) else None
+        if isinstance(sources, list):
+            for source in sources:
+                if isinstance(source, dict):
+                    add_url(source.get("url"))
+    if completed:
+        for item in output:
+            if not isinstance(item, dict) or item.get("type") != "message" or not isinstance(item.get("content"), list):
+                continue
+            for part in item["content"]:
+                if not isinstance(part, dict) or part.get("type") != "output_text" or not isinstance(part.get("annotations"), list):
+                    continue
+                for annotation in part["annotations"]:
+                    if isinstance(annotation, dict) and annotation.get("type") == "url_citation":
+                        add_url(annotation.get("url"))
+    report = {"http_status": status, "search_completed": completed,
+              "x_source_count": len(urls) if completed else 0, "daily_digest_ready": False}
+    detail = data.get("error")
+    message = detail.get("message") if isinstance(detail, dict) else detail
+    if isinstance(message, str):
+        report["provider_error_hint"] = _error_hint(message, sensitive)
+    return report, 0 if completed and urls else 1
+
+
 def _field_name(name: str, sensitive: tuple[str, ...]) -> str:
     return _safe_text(name, sensitive)[:MAX_FIELD_NAME]
 
@@ -241,6 +290,8 @@ def _failure(mode: str, message: str, status: int | None = None) -> dict:
         report["suggested_model"] = None
     elif mode == "chat":
         report.update({"model_reply_received": False, "daily_digest_ready": False})
+    elif mode == "responses-search":
+        report.update({"search_completed": False, "x_source_count": 0, "daily_digest_ready": False})
     else:
         report.update({
             "possible_source_links": [],
@@ -329,6 +380,10 @@ def _probe(mode: str, base: str, model: str, key: str, sensitive: tuple[str, ...
                 "messages": [{"role": "user", "content": "Say hello in one sentence."}],
             }
             body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        elif mode == "responses-search":
+            endpoint = "/responses"
+            headers["Content-Type"] = "application/json"
+            body = json.dumps(_responses_payload(model), ensure_ascii=False).encode("utf-8")
         req = request.Request(base + endpoint, data=body, headers=headers, method="GET" if mode in {"api", "catalog"} else "POST")
         # The default SSL context checks both the certificate chain and hostname.
         opener = request.build_opener(NoRedirects(), request.HTTPSHandler(context=ssl.create_default_context()))
@@ -383,6 +438,8 @@ def _probe(mode: str, base: str, model: str, key: str, sensitive: tuple[str, ...
                       "finish_reason": reason if isinstance(reason, str) and reason in KNOWN_FINISH_REASONS else "unrecognized",
                       "daily_digest_ready": False}
             return report, 0 if received else 1
+        if mode == "responses-search":
+            return _responses_report(data, status, sensitive)
         return _search_report(data, status, sensitive), 0
     except error.HTTPError as exc:
         code = exc.code if type(exc.code) is int and 100 <= exc.code <= 599 else None
@@ -421,8 +478,8 @@ def main(argv: list[str] | None = None) -> int:
         description="Make one opt-in connection check. This does not enable or send a daily digest.",
         allow_abbrev=False,
     )
-    parser.add_argument("--mode", choices=("api", "catalog", "chat", "search"),
-                        help="api: GET models; catalog: select a listed GPT model; chat: one minimal chat request; search: one candidate GLM search request")
+    parser.add_argument("--mode", choices=("api", "catalog", "chat", "search", "responses-search"),
+                        help="api: GET models; catalog: select a listed GPT model; chat: minimal chat; search: candidate GLM search; responses-search: one Responses web search")
     parser.add_argument("--report", default=DEFAULT_REPORT, help="sanitized JSON report path (default: .local/connection-report.json)")
     try:
         args = parser.parse_args(argv)
@@ -447,7 +504,7 @@ def main(argv: list[str] | None = None) -> int:
     except Exception:
         print(_safe_text("Could not write the sanitized report.", sensitive), file=sys.stderr)
         return 1
-    if args.mode in {"api", "catalog", "chat"}:
+    if args.mode in {"api", "catalog", "chat", "responses-search"}:
         summary = report
     else:
         # Remote field names, paths and links are available only in the report.
