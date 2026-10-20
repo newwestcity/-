@@ -6,7 +6,19 @@
 
 脚本、邮件模板、发送记录和 GitHub Actions 工作流已写入。本地测试使用模拟服务，不代表 Tokeness 搜索、QQ 发信或云端日程已经验证。
 
-Tokeness 官网目前被本云环境的网络策略拦截。其实际 API 地址、模型名、Responses API 与 `web_search` 支持尚未确认；脚本不会猜测这些值。现有搜索适配器是**有条件可用的标准 Responses 搜索接口**。如果 Tokeness 只提供文本模型，还需接入能够取得真实 X 原帖的独立来源。
+用户提供的 Tokeness 调用示例为 `https://n.tokeness.dev/v1/chat/completions`，模型为 `glm-5.3-flashx`。这是 Chat Completions 对话示例，尚未实测；它没有证明第三方平台支持内置搜索或标准 Responses 搜索接口。现有日报搜索适配器是**有条件可用的标准 Responses 搜索接口**，不能直接认定它兼容上述 GLM 对话示例。如果 Tokeness 只提供文本模型，还需接入能够取得真实 X 原帖的独立来源。
+
+## 先验证 Tokeness
+
+此步骤在 GitHub 自己的执行机器上运行，与 Codex 开发环境的保存、发布分开。当前 Codex 执行机器仍无法连到 `n.tokeness.dev`，请求被网络代理拒绝；这不能判断 Tokeness 本身或密钥是否正常。
+
+在 GitHub 仓库 **Settings → Secrets and variables → Actions → New repository secret** 中，将可用的 API 密钥安全保存为 `DIGEST_API_KEY`。再打开 [验证 Tokeness 接口](https://github.com/newwestcity/-/actions/workflows/check-connection.yml)，点 **Run workflow**：
+
+1. 首先保持 `mode=api`。地址和模型已按用户的示例预填，无需填写 QQ 邮箱。只请求一次模型目录，不发邮件。
+2. 连通成功后选择 `mode=search`，测试一次带内置搜索参数的请求，可能产生模型和检索调用费。该参数格式来自 GLM 官方示例；Tokeness 是否转发、指定模型是否支持，都由此次验证判断。
+3. 运行摘要和 `tokeness-connection-report` 附件只保留脱敏状态、字段名及可能的 X 来源链接，不包含密钥、模型生成正文或原始错误正文。搜索返回的候选元数据仍需核实，不等于日报已经就绪。
+
+这个验证工作流不会发送邮件、修改变量或启用每日计划。看到普通聊天内容不能确认搜索成功；如果没有返回检索来源，后续发信仍保持停止。
 
 ## 运行
 
@@ -77,6 +89,6 @@ GitHub 的定时任务可能排队延迟，08:00 是触发目标，不保证准�
 
 ## 云开发环境
 
-开发环境用来编写和验证脚本，其发布不会自动启动每日任务。Tokeness 所需网络变更保存在环境配置草稿中，需在环境设置审阅、保存并发布后验证是否生效。
+开发环境用来编写和验证脚本，其发布不会自动启动每日任务，也不是 GitHub Actions 部署的前提。环境设置保存失败时，可以继续在已配置凭据的 GitHub 运行器上验证服务，无需反复处理 Codex 的发布页面。
 
 云环境的 HTTPS 代理密钥可能是按目的地替换的占位符，不应拿它直接当 SMTP 授权码。QQ SMTP 的端到端测试应在具备真实 Secrets 和 TCP/TLS 访问的执行平台完成，例如配置后的 GitHub Actions。

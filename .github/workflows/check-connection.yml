@@ -1,0 +1,75 @@
+name: 验证 Tokeness 接口
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: 'api 只读取模型目录；search 测试一次联网检索，可能计费'
+        type: choice
+        options:
+          - api
+          - search
+        default: api
+        required: true
+      api_base:
+        description: '服务商示例中的 API 根地址'
+        type: string
+        default: 'https://n.tokeness.dev/v1'
+        required: true
+      model:
+        description: '服务商示例中的模型名'
+        type: string
+        default: 'glm-5.3-flashx'
+        required: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tokeness-check
+  cancel-in-progress: false
+
+jobs:
+  check:
+    if: github.ref_name == github.event.repository.default_branch
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      DIGEST_API_BASE: ${{ inputs.api_base }}
+      DIGEST_MODEL: ${{ inputs.model }}
+      DIGEST_API_KEY: ${{ secrets.DIGEST_API_KEY }}
+      CHECK_MODE: ${{ inputs.mode }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        with:
+          python-version: '3.12'
+      - name: 本地检查
+        run: python -m unittest discover -s tests -v
+      - name: 单次接口验证
+        run: python scripts/check_connection.py --mode "$CHECK_MODE"
+      - name: 显示脱敏验证报告
+        if: always()
+        run: |
+          python - <<'PY'
+          import html
+          import json
+          import os
+          from pathlib import Path
+          report = Path('.local/connection-report.json')
+          if report.exists():
+              value = json.loads(report.read_text(encoding='utf-8'))
+              rendered = html.escape(json.dumps(value, ensure_ascii=False, indent=2))
+              with open(os.environ['GITHUB_STEP_SUMMARY'], 'a', encoding='utf-8') as stream:
+                  stream.write('<h2>接口验证结果</h2><pre>' + rendered + '</pre>')
+          PY
+      - name: 保存脱敏报告
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: tokeness-connection-report
+          path: .local/connection-report.json
+          retention-days: 3
+          if-no-files-found: ignore
