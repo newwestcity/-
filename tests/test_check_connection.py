@@ -113,6 +113,47 @@ class CheckConnectionTests(unittest.TestCase):
         self.assertTrue(self.report()["configured_model_present"])
         self.assert_private(base, model)
 
+    def test_chat_exactly_matches_documented_minimal_request(self):
+        self.respond({"choices": [{"finish_reason": "stop", "message": {"content": "Hello!"}}]})
+        self.assertEqual(self.run_check("chat"), 0)
+        req = self.opener.open.call_args.args[0]
+        self.assertEqual(req.get_method(), "POST")
+        self.assertEqual(req.full_url, helper.DEFAULT_API_BASE + "/chat/completions")
+        self.assertEqual(json.loads(req.data), {"model": helper.DEFAULT_MODEL,
+                                              "messages": [{"role": "user", "content": "Say hello in one sentence."}]})
+        self.assertTrue(self.report()["model_reply_received"])
+        self.assertFalse(self.report()["daily_digest_ready"])
+        self.assert_private("Hello!")
+        self.opener.open.assert_called_once()
+
+    def test_chat_without_completed_model_reply_is_not_success(self):
+        responses = [{"error": {"message": self.key}}, {"choices": []},
+                     {"choices": [{"finish_reason": "stop", "message": {"content": ""}}]},
+                     {"choices": [{"finish_reason": "length", "message": {"content": "partial"}}]}]
+        for data in responses:
+            self.respond(data)
+            self.assertEqual(self.run_check("chat"), 1)
+            self.assertFalse(self.report()["model_reply_received"])
+        self.assert_private("partial")
+
+    def test_bad_request_exposes_only_safe_classification_not_raw_message(self):
+        error = {"error": {"param": "tools[0].type", "message": "unsupported tool type " + self.key}}
+        body = BytesIO(json.dumps(error).encode())
+        self.opener.open.side_effect = HTTPError("https://private.test/" + self.key, 400, self.key, {}, body)
+        self.assertEqual(self.run_check("search"), 1)
+        self.assertEqual(self.report()["rejected_field"], "tools[0].type")
+        self.assertEqual(self.report()["error_category"], "search_tool_parameter_rejected")
+        self.assert_private("unsupported tool type", "private.test")
+        self.opener.open.assert_called_once()
+
+    def test_unknown_bad_request_fields_and_oversized_errors_are_not_published(self):
+        for raw in [json.dumps({"error": {"param": self.key, "message": self.key}}).encode(),
+                    self.key.encode() * 2000]:
+            self.opener.open.side_effect = HTTPError("https://private.test/", 400, self.key, {}, BytesIO(raw))
+            self.assertEqual(self.run_check("chat"), 1)
+            self.assertNotIn("rejected_field", self.report())
+        self.assert_private()
+
     def test_invalid_base_urls_stop_before_network(self):
         invalid = [
             "http://example.test/v1", "https://user:password@example.test/v1",

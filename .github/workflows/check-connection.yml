@@ -4,10 +4,11 @@ on:
   workflow_dispatch:
     inputs:
       mode:
-        description: 'api 只读取模型目录；search 测试一次联网检索，可能计费'
+        description: 'api 读取模型目录；chat 普通对话；search 检索；对话和检索可能计费'
         type: choice
         options:
           - api
+          - chat
           - search
         default: api
         required: true

@@ -10,6 +10,8 @@
 
 ## 先验证 Tokeness
 
+普通聊天调用与搜索能力分开验证。[普通 API 验证](https://github.com/newwestcity/-/actions/workflows/check-chat.yml)使用已经配置的 `DIGEST_API_KEY`，按用户提供的原始示例发送一次 `model + 单条 user 消息` 请求，不加搜索工具或其他模型参数。新增或修改该验证工作流时会触发一次，也可手动执行；这会调用模型，可能计费。只有收到非空且未被截断的模型回复才判定成功。它不验证 X 搜索、不发邮件、不启用日程。
+
 此步骤在 GitHub 自己的执行机器上运行，与 Codex 开发环境的保存、发布分开。当前 Codex 执行机器仍无法连到 `n.tokeness.dev`，请求被网络代理拒绝；这不能判断 Tokeness 本身或密钥是否正常。
 
 在 GitHub 仓库 **Settings → Secrets and variables → Actions → New repository secret** 中，将可用的 API 密钥安全保存为 `DIGEST_API_KEY`。再打开 [验证 Tokeness 接口](https://github.com/newwestcity/-/actions/workflows/check-connection.yml)，点 **Run workflow**：

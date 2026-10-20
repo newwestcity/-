@@ -233,6 +233,8 @@ def _failure(mode: str, message: str, status: int | None = None) -> dict:
     report = {"http_status": status, "error": message}
     if mode == "api":
         report["configured_model_present"] = None
+    elif mode == "chat":
+        report.update({"model_reply_received": False, "daily_digest_ready": False})
     else:
         report.update({
             "possible_source_links": [],
@@ -242,6 +244,44 @@ def _failure(mode: str, message: str, status: int | None = None) -> dict:
             "notice": NOTICE,
         })
     return report
+
+
+def _request_error_details(exc) -> dict:
+    """Classify a bounded JSON error without publishing its free-form text."""
+    try:
+        raw = exc.read(32769)
+        if len(raw) > 32768:
+            return {}
+        data = json.loads(raw.decode("utf-8"))
+        detail = data.get("error", data) if isinstance(data, dict) else None
+        if not isinstance(detail, dict):
+            return {}
+        message = detail.get("message", "")
+        message = message.casefold() if isinstance(message, str) else ""
+        param = detail.get("param")
+        allowed_fields = {"model", "messages", "messages[0].role", "tools", "tools[0].type",
+                          "max_tokens", "max_completion_tokens", "stream", "response_format"}
+        result = {"rejected_field": param} if isinstance(param, str) and param in allowed_fields else {}
+        category = "request_rejected"
+        if any(word in message for word in ("no available channel", "无可用渠道")):
+            category = "no_available_model_channel"
+        elif any(word in message for word in ("insufficient quota", "insufficient balance", "余额不足", "额度不足")):
+            category = "quota_or_balance"
+        elif any(word in message for word in ("invalid api key", "invalid_api_key", "无效的令牌", "无效的密钥")):
+            category = "credential_rejected"
+        elif param in {"max_tokens", "max_completion_tokens"}:
+            category = "token_parameter_rejected"
+        elif param == "model" or any(word in message for word in ("model not found", "model_not_found", "模型不存在")):
+            category = "model_rejected"
+        elif (isinstance(param, str) and param.startswith("tools")) or (
+            any(word in message for word in ("tools", "web_search", "web search"))
+            and any(word in message for word in ("unsupported", "not support", "invalid", "不支持", "无效"))
+        ):
+            category = "search_tool_parameter_rejected"
+        result["error_category"] = category
+        return result
+    except Exception:
+        return {}
 
 
 def _probe(mode: str, base: str, model: str, key: str, sensitive: tuple[str, ...]) -> tuple[dict, int]:
@@ -257,10 +297,14 @@ def _probe(mode: str, base: str, model: str, key: str, sensitive: tuple[str, ...
         headers = {"Authorization": "Bearer " + key, "Accept": "application/json"}
         body = None
         endpoint = "/models"
-        if mode == "search":
+        if mode in {"chat", "search"}:
             endpoint = "/chat/completions"
             headers["Content-Type"] = "application/json"
-            body = json.dumps(_payload(model), ensure_ascii=False).encode("utf-8")
+            payload = _payload(model) if mode == "search" else {
+                "model": model,
+                "messages": [{"role": "user", "content": "Say hello in one sentence."}],
+            }
+            body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
         req = request.Request(base + endpoint, data=body, headers=headers, method="GET" if mode == "api" else "POST")
         # The default SSL context checks both the certificate chain and hostname.
         opener = request.build_opener(NoRedirects(), request.HTTPSHandler(context=ssl.create_default_context()))
@@ -286,11 +330,24 @@ def _probe(mode: str, base: str, model: str, key: str, sensitive: tuple[str, ...
                 isinstance(item, dict) and item.get("id") == model for item in models
             )
             return {"http_status": status, "configured_model_present": bool(present)}, 0
+        if mode == "chat":
+            choices = data.get("choices")
+            first = choices[0] if isinstance(choices, list) and choices else None
+            message = first.get("message") if isinstance(first, dict) else None
+            content = message.get("content") if isinstance(message, dict) else None
+            reason = first.get("finish_reason") if isinstance(first, dict) else None
+            received = isinstance(content, str) and bool(content.strip()) and reason not in {"length", "content_filter"}
+            report = {"http_status": status, "model_reply_received": received,
+                      "finish_reason": reason if isinstance(reason, str) and reason in KNOWN_FINISH_REASONS else "unrecognized",
+                      "daily_digest_ready": False}
+            return report, 0 if received else 1
         return _search_report(data, status, sensitive), 0
     except error.HTTPError as exc:
-        # Never read or stringify the remote error body/reason/headers.
         code = exc.code if type(exc.code) is int and 100 <= exc.code <= 599 else None
-        return _failure(mode, "HTTP request was not accepted.", code), 1
+        report = _failure(mode, "HTTP request was not accepted.", code)
+        if code in {400, 422}:
+            report.update(_request_error_details(exc))
+        return report, 1
     except CheckError as exc:
         return _failure(mode, str(exc), status), 1
     except (error.URLError, HTTPException, OSError, ValueError):
@@ -322,7 +379,8 @@ def main(argv: list[str] | None = None) -> int:
         description="Make one opt-in connection check. This does not enable or send a daily digest.",
         allow_abbrev=False,
     )
-    parser.add_argument("--mode", choices=("api", "search"), help="api: GET models; search: one candidate GLM search request")
+    parser.add_argument("--mode", choices=("api", "chat", "search"),
+                        help="api: GET models; chat: the documented minimal chat request; search: one candidate GLM search request")
     parser.add_argument("--report", default=DEFAULT_REPORT, help="sanitized JSON report path (default: .local/connection-report.json)")
     try:
         args = parser.parse_args(argv)
@@ -344,7 +402,7 @@ def main(argv: list[str] | None = None) -> int:
     except Exception:
         print(_safe_text("Could not write the sanitized report.", sensitive), file=sys.stderr)
         return 1
-    if args.mode == "api":
+    if args.mode in {"api", "chat"}:
         summary = report
     else:
         # Remote field names, paths and links are available only in the report.
