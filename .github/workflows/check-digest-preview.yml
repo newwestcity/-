@@ -51,6 +51,7 @@ jobs:
           except Exception:
               print('::error title=Digest preview failed::Unexpected failure while generating the preview.')
               raise SystemExit(1)
+          print('::notice title=Delivery status::mail_sent=false')
           if code != 0:
               message = errors.getvalue().strip() or output.getvalue().strip() or 'Digest preview failed.'
               print('::error title=Digest preview failed::' + escape_annotation(message))

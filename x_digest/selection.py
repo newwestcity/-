@@ -44,6 +44,7 @@ def select_posts(
     now: datetime | None = None,
     max_age_days: int = 7,
     max_offer_age_hours: int = 72,
+    diagnostics: dict[str, int] | None = None,
 ) -> list[dict]:
     """Accept only cited, unseen posts, then reserve a slot per available topic.
 
@@ -54,6 +55,15 @@ def select_posts(
         raise ValueError("Selection limits must be positive")
     if now is not None and now.utcoffset() is None:
         raise ValueError("Current time must include a timezone")
+    counts = dict.fromkeys((
+        "candidates_received", "cited_post_ids", "named_cited_post_ids",
+        "invalid_url", "uncited", "seen", "unknown_author", "blocked_author",
+        "invalid_category", "invalid_summary", "too_old", "future", "eligible", "selected",
+    ), 0)
+    if diagnostics is not None:
+        diagnostics.clear()
+        diagnostics.update(counts)
+        counts = diagnostics
     sources: dict[str, tuple[str, str]] = {}
     for url in cited_urls:
         try:
@@ -63,37 +73,58 @@ def select_posts(
                 sources[source_id] = (source_url, source_handle)
         except (ValueError, TypeError):
             continue
+    counts["cited_post_ids"] = len(sources)
+    counts["named_cited_post_ids"] = sum(bool(handle) for _, handle in sources.values())
     blocked = {a.lstrip("@").casefold() for a in (blocked_accounts or [])}
     dedup = set(seen_ids or ())
     valid: list[dict] = []
     for item in candidates:
+        counts["candidates_received"] += 1
         if not isinstance(item, dict):
+            counts["invalid_url"] += 1
             continue
         try:
             url, post_id, handle = canonical_post_url(item.get("url"))
         except (ValueError, TypeError):
+            counts["invalid_url"] += 1
             continue
-        if post_id not in sources or post_id in dedup:
+        if post_id not in sources:
+            counts["uncited"] += 1
+            continue
+        if post_id in dedup:
+            counts["seen"] += 1
             continue
         # The source metadata supplies the author; generated text cannot rename
         # a blocked account while retaining the cited post's numeric ID.
         url, handle = sources[post_id]
-        if not handle or handle.casefold() in blocked:
+        if not handle:
+            counts["unknown_author"] += 1
+            continue
+        if handle.casefold() in blocked:
+            counts["blocked_author"] += 1
             continue
         if item.get("category") not in categories:
+            counts["invalid_category"] += 1
             continue
         if any(not isinstance(item.get(k), str) or not item[k].strip() for k in ("summary", "reason")):
+            counts["invalid_summary"] += 1
             continue
         if now is not None:
             try:
                 published = datetime.fromtimestamp(((int(post_id) >> 22) + 1288834974657) / 1000, timezone.utc)
             except (ValueError, OverflowError, OSError):
+                counts["invalid_url"] += 1
                 continue
             age_limit = timedelta(hours=max_offer_age_hours) if item["category"] == "学生羊毛" else timedelta(days=max_age_days)
-            if published > now + timedelta(minutes=5) or now - published > age_limit:
+            if published > now + timedelta(minutes=5):
+                counts["future"] += 1
+                continue
+            if now - published > age_limit:
+                counts["too_old"] += 1
                 continue
         dedup.add(post_id)
         valid.append({**item, "id": post_id, "url": url, "author": "@" + handle})
+        counts["eligible"] += 1
 
     chosen: list[dict] = []
     used: set[str] = set()
@@ -119,4 +150,5 @@ def select_posts(
                 break
     for item in valid:
         take(item)
+    counts["selected"] = len(chosen)
     return chosen

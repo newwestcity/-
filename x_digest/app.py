@@ -94,13 +94,15 @@ def run_digest(settings: dict, *, work_dir: Path, send: bool, now: datetime | No
         seen = seen_post_ids(state, today=now.date(), history_days=settings["history_days"])
         result = search(base_url=os.environ["DIGEST_API_BASE"], api_key=os.environ["DIGEST_API_KEY"],
                         model=os.environ["DIGEST_MODEL"], settings=settings, seen_ids=seen, now=now)
+        diagnostics: dict[str, int] = {}
         posts = select_posts(result.posts, categories=settings["categories"], target_count=settings["target_count"],
                              max_per_category=settings["max_per_category"], max_per_author=settings["max_per_author"],
                              blocked_accounts=settings["blocked_accounts"], seen_ids=seen, cited_urls=result.cited_urls,
                              now=now, max_age_days=settings.get("max_age_days", 7),
-                             max_offer_age_hours=settings.get("max_offer_age_hours", 72))
+                             max_offer_age_hours=settings.get("max_offer_age_hours", 72), diagnostics=diagnostics)
         if not posts:
-            raise ConfigurationError("没有通过来源、时效和去重检查的帖子；本次停止发信")
+            raise ConfigurationError("没有通过来源、时效和去重检查的帖子；本次停止发信；筛选统计："
+                                     + json.dumps(diagnostics, separators=(",", ":")))
         sender = os.environ["SMTP_USERNAME"]
         recipient = os.environ.get("MAIL_TO") or sender
         message = build_message(posts, recipient=recipient, sender=sender, digest_date=date,
