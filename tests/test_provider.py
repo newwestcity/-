@@ -95,7 +95,7 @@ class ProviderTests(unittest.TestCase):
         self.assertEqual(req.full_url, "https://relay.example/v1/responses")
         self.assertEqual(req.get_method(), "POST")
         self.assertEqual(req.get_header("Authorization"), "Bearer " + SECRET)
-        self.assertEqual(opener.open.call_args.kwargs["timeout"], 120)
+        self.assertEqual(opener.open.call_args.kwargs["timeout"], 360)
         self.assertEqual(payload["tool_choice"], "required")
         self.assertEqual(payload["tools"], [{"type": "web_search", "filters": {
             "allowed_domains": ["x.com", "twitter.com"]}}])

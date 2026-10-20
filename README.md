@@ -4,9 +4,9 @@
 
 ## 当前进度
 
-脚本、邮件模板、发送记录和 GitHub Actions 工作流已写入。本地测试使用模拟服务，不代表 Tokeness 搜索、QQ 发信或云端日程已经验证。
+脚本、邮件模板、发送记录和 GitHub Actions 工作流已写入。Tokeness 的普通 GPT 调用和标准 Responses `web_search` 已在 GitHub 执行机器上实测成功；QQ 发信和完整每日投递尚未验证，定时发送保持关闭。
 
-用户提供的 Tokeness 调用示例为 `https://n.tokeness.dev/v1/chat/completions`，模型为 `glm-5.3-flashx`。这是 Chat Completions 对话示例，尚未实测；它没有证明第三方平台支持内置搜索或标准 Responses 搜索接口。现有日报搜索适配器是**有条件可用的标准 Responses 搜索接口**，不能直接认定它兼容上述 GLM 对话示例。如果 Tokeness 只提供文本模型，还需接入能够取得真实 X 原帖的独立来源。
+已核对的 API 根地址是 `https://n.tokeness.dev/v1`，模型是该密钥目录实际列出的 `gpt-6-luna`。普通对话走 `/chat/completions`，日报搜索走 `/responses`；单次接口检查通过不等于完整日报已投递。
 
 ## 先验证 Tokeness
 
@@ -16,15 +16,11 @@
 
 [X 搜索验证](https://github.com/newwestcity/-/actions/workflows/check-x-search.yml)独立测试一次标准 Responses `web_search`（最多一次工具调用，240 秒超时），只有完整搜索记录与独立 X 原帖引用同时存在才通过；正文链接仅列为未验证候选，不会让检查通过。同时仅显示邮件变量/授权码是否存在，不公开它们的值、不连接 SMTP。此验证不启用每日发送。
 
+X 搜索已[实测成功](https://github.com/newwestcity/-/actions/runs/39464437212)：HTTP 200，完整搜索记录，2 条有效 X 原帖来源。[完整日报预览](https://github.com/newwestcity/-/actions/workflows/check-digest-preview.yml)进一步运行实际的六领域搜索、筛选、来源/时效/去重校验与 HTML 渲染，不连接 SMTP；HTML 可从工作流附件下载。
+
 此步骤在 GitHub 自己的执行机器上运行，与 Codex 开发环境的保存、发布分开。当前 Codex 执行机器仍无法连到 `n.tokeness.dev`，请求被网络代理拒绝；这不能判断 Tokeness 本身或密钥是否正常。
 
-在 GitHub 仓库 **Settings → Secrets and variables → Actions → New repository secret** 中，将可用的 API 密钥安全保存为 `DIGEST_API_KEY`。再打开 [验证 Tokeness 接口](https://github.com/newwestcity/-/actions/workflows/check-connection.yml)，点 **Run workflow**：
-
-1. 首先保持 `mode=api`。地址和模型已按用户的示例预填，无需填写 QQ 邮箱。只请求一次模型目录，不发邮件。
-2. 连通成功后选择 `mode=search`，测试一次带内置搜索参数的请求，可能产生模型和检索调用费。该参数格式来自 GLM 官方示例；Tokeness 是否转发、指定模型是否支持，都由此次验证判断。
-3. 运行摘要和 `tokeness-connection-report` 附件只保留脱敏状态、字段名及可能的 X 来源链接，不包含密钥、模型生成正文或原始错误正文。搜索返回的候选元数据仍需核实，不等于日报已经就绪。
-
-这个验证工作流不会发送邮件、修改变量或启用每日计划。看到普通聊天内容不能确认搜索成功；如果没有返回检索来源，后续发信仍保持停止。
+需要重新验证时，沿用 GitHub 仓库 Secret `DIGEST_API_KEY`，依次打开普通 API、X 搜索或完整日报预览工作流，点 **Run workflow**。这些调用可能计费；不会修改变量、发邮件或启用每日计划。看到聊天正文中的链接不能证明检索成功；没有返回独立来源时停止发信。
 
 ## 运行
 

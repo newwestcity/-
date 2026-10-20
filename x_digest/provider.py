@@ -19,7 +19,7 @@ from .selection import canonical_post_url
 
 
 MAX_RESPONSE_BYTES = 4 * 1024 * 1024
-REQUEST_TIMEOUT = 120
+REQUEST_TIMEOUT = 360
 
 
 class ProviderError(ValueError):

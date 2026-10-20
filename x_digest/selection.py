@@ -9,20 +9,26 @@ from urllib.parse import urlsplit
 
 
 POST_PATH = re.compile(r"/([A-Za-z0-9_]{1,15})/status/([1-9][0-9]{0,24})/?\Z")
+MEDIA_POST_PATH = re.compile(r"/([A-Za-z0-9_]{1,15})/status/([1-9][0-9]{0,24})/(?:photo|video)/[1-9][0-9]*/?\Z")
+WEB_POST_PATH = re.compile(r"/i/web/status/([1-9][0-9]{0,24})/?\Z")
 
 
 def canonical_post_url(url: str) -> tuple[str, str, str]:
-    """Return canonical URL, post ID and handle; reject non-post destinations."""
+    """Return URL, ID and handle (empty when an X routing URL omits author)."""
     if not isinstance(url, str) or any(c.isspace() for c in url):
         raise ValueError("Invalid X post URL")
     parsed = urlsplit(url)
-    if parsed.scheme != "https" or parsed.netloc.lower() not in {"x.com", "twitter.com", "www.x.com", "www.twitter.com"}:
+    if parsed.scheme != "https" or parsed.netloc.lower() not in {"x.com", "twitter.com", "www.x.com", "www.twitter.com", "mobile.x.com", "mobile.twitter.com"}:
         raise ValueError("Only HTTPS X/Twitter post links are accepted")
-    match = POST_PATH.fullmatch(parsed.path)
+    web_match = WEB_POST_PATH.fullmatch(parsed.path)
+    if web_match:
+        post_id = web_match.group(1)
+        return f"https://x.com/i/status/{post_id}", post_id, ""
+    match = POST_PATH.fullmatch(parsed.path) or MEDIA_POST_PATH.fullmatch(parsed.path)
     if not match:
         raise ValueError("Link does not identify an X post")
     handle, post_id = match.groups()
-    return f"https://x.com/{handle}/status/{post_id}", post_id, handle
+    return f"https://x.com/{handle}/status/{post_id}", post_id, "" if handle.casefold() == "i" else handle
 
 
 def select_posts(
@@ -52,7 +58,9 @@ def select_posts(
     for url in cited_urls:
         try:
             source_url, source_id, source_handle = canonical_post_url(url)
-            sources.setdefault(source_id, (source_url, source_handle))
+            existing = sources.get(source_id)
+            if existing is None or (not existing[1] and source_handle):
+                sources[source_id] = (source_url, source_handle)
         except (ValueError, TypeError):
             continue
     blocked = {a.lstrip("@").casefold() for a in (blocked_accounts or [])}
@@ -70,7 +78,7 @@ def select_posts(
         # The source metadata supplies the author; generated text cannot rename
         # a blocked account while retaining the cited post's numeric ID.
         url, handle = sources[post_id]
-        if handle.casefold() in blocked:
+        if not handle or handle.casefold() in blocked:
             continue
         if item.get("category") not in categories:
             continue

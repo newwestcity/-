@@ -48,6 +48,24 @@ class SelectionTests(unittest.TestCase):
                               cited_urls=["https://x.com/blocked/status/101"])
         self.assertEqual(chosen, [])
 
+    def test_mobile_and_media_links_are_deduplicated_by_post_id(self):
+        candidates = [post(101), {**post(101), 'url': 'https://mobile.twitter.com/author/status/101/photo/1'}]
+        chosen = select_posts(candidates, categories=['AI'], cited_urls=['https://x.com/author/status/101/video/1'])
+        self.assertEqual([p['id'] for p in chosen], ['101'])
+        self.assertEqual(chosen[0]['url'], 'https://x.com/author/status/101')
+
+    def test_authorless_routing_url_cannot_supply_a_generated_author(self):
+        for source in ('https://x.com/i/web/status/101', 'https://x.com/i/status/101'):
+            self.assertEqual(canonical_post_url(source), ('https://x.com/i/status/101', '101', ''))
+            chosen = select_posts([post(101, handle='invented')], categories=['AI'], cited_urls=[source])
+            self.assertEqual(chosen, [])
+
+    def test_named_source_can_resolve_an_authorless_citation_of_the_same_id(self):
+        chosen = select_posts([post(101, handle='generated')], categories=['AI'],
+                              cited_urls=['https://x.com/i/web/status/101', 'https://twitter.com/actual/status/101'])
+        self.assertEqual(chosen[0]['author'], '@actual')
+        self.assertEqual(chosen[0]['url'], 'https://x.com/actual/status/101')
+
     def test_future_and_old_post_ids_are_rejected_using_snowflake_timestamp(self):
         now = datetime(2026, 10, 20, tzinfo=timezone.utc)
         def snowflake(hours):

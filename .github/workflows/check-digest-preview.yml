@@ -1,0 +1,94 @@
+name: 生成完整日报预览
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/check-digest-preview.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  preview:
+    if: github.ref_name == github.event.repository.default_branch
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      DIGEST_API_BASE: https://n.tokeness.dev/v1
+      DIGEST_MODEL: gpt-6-luna
+      DIGEST_API_KEY: ${{ secrets.DIGEST_API_KEY }}
+      SMTP_USERNAME: preview@example.invalid
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        with:
+          python-version: '3.12'
+      - name: 一次完整日报抓取与预览
+        run: |
+          python - <<'PY'
+          from collections import Counter
+          from contextlib import redirect_stderr, redirect_stdout
+          import html
+          from io import StringIO
+          import json
+          import os
+          from pathlib import Path
+
+          from x_digest import app
+          from x_digest.selection import canonical_post_url
+
+          def escape_annotation(value):
+              return value.replace('%', '%25').replace('\r', '%0D').replace('\n', '%0A')
+
+          output, errors = StringIO(), StringIO()
+          try:
+              with redirect_stdout(output), redirect_stderr(errors):
+                  code = app.main(['--fetch'])
+          except Exception:
+              print('::error title=Digest preview failed::Unexpected failure while generating the preview.')
+              raise SystemExit(1)
+          if code != 0:
+              message = errors.getvalue().strip() or output.getvalue().strip() or 'Digest preview failed.'
+              print('::error title=Digest preview failed::' + escape_annotation(message))
+              raise SystemExit(code)
+
+          try:
+              settings = app.load_settings(Path('settings.json'))
+              data = json.loads(Path('.local/preview/digest.json').read_text(encoding='utf-8'))
+              posts = data.get('posts') if isinstance(data, dict) else None
+              if not isinstance(posts, list) or not 1 <= len(posts) <= settings['target_count']:
+                  raise ValueError('Invalid preview post count')
+              public_posts = []
+              for post in posts:
+                  if not isinstance(post, dict):
+                      raise ValueError('Invalid preview post')
+                  category = post.get('category')
+                  if not isinstance(category, str) or category not in settings['categories']:
+                      raise ValueError('Invalid preview category')
+                  url, _, _ = canonical_post_url(post.get('url'))
+                  public_posts.append((category, url))
+          except (OSError, ValueError, KeyError, TypeError):
+              print('::error title=Digest preview failed::Generated preview could not be validated.')
+              raise SystemExit(1)
+
+          counts = Counter(category for category, _ in public_posts)
+          summary = {'post_count': len(public_posts),
+                     'category_counts': {category: counts[category] for category in settings['categories']}}
+          print('::notice title=Digest preview::' + escape_annotation(json.dumps(summary, ensure_ascii=False)))
+          for category, url in public_posts:
+              print('::notice title=Canonical X post::' + escape_annotation(category + ' ' + url))
+          rendered = html.escape(json.dumps(summary, ensure_ascii=False, indent=2))
+          with open(os.environ['GITHUB_STEP_SUMMARY'], 'a', encoding='utf-8') as stream:
+              stream.write('<h2>日报预览统计</h2><pre>' + rendered + '</pre>')
+          PY
+      - name: 保存 HTML 预览
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: digest-preview
+          path: .local/preview/digest.html
+          retention-days: 7
+          if-no-files-found: error
