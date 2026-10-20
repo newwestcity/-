@@ -74,6 +74,7 @@ jobs:
                               'Connection failed; no retry was attempted.': 'connection_failed',
                               'Response was not a supported JSON object.': 'response_format_invalid',
                               'No supported GPT model was listed.': 'no_compatible_model',
+                              'Model directory did not contain a model list.': 'invalid_model_directory',
                               'HTTP request was not accepted.': 'http_rejected'}.get(value.get('error'), 'unclassified')
               finish = value.get('finish_reason')
               finish = finish if isinstance(finish, str) and finish in {'stop', 'length', 'content_filter', 'tool_calls', 'function_call'} else 'unavailable'
@@ -84,4 +85,13 @@ jobs:
               if isinstance(hint, str) and hint:
                   hint = hint.replace('%', '%25').replace('\r', '%0D').replace('\n', '%0A')
                   print('::notice title=Provider error (redacted)::' + hint)
+              model_ids = value.get('listed_model_ids')
+              if isinstance(model_ids, list):
+                  import re
+                  safe_ids = [name for name in model_ids if isinstance(name, str)
+                              and re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._/-]{0,79}', name)]
+                  print('::notice title=Listed model IDs::' + ', '.join(safe_ids))
+                  count = value.get('listed_model_count')
+                  if type(count) is int and count >= 0:
+                      print('::notice title=Model directory size::' + str(count))
           PY

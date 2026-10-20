@@ -357,6 +357,16 @@ def _probe(mode: str, base: str, model: str, key: str, sensitive: tuple[str, ...
                 report = {"http_status": status, "suggested_model": selected}
                 if selected is None:
                     report["error"] = "No supported GPT model was listed."
+                    report["listed_model_count"] = len(models) if isinstance(models, list) else 0
+                    report["listed_model_ids"] = sorted(name for name in available
+                                                        if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._/-]{0,79}", name)
+                                                        and not name.startswith("sk-"))[:30]
+                    if not isinstance(models, list):
+                        report["error"] = "Model directory did not contain a model list."
+                        detail = data.get("error", data)
+                        message = detail.get("message") if isinstance(detail, dict) else detail
+                        if isinstance(message, str):
+                            report["provider_error_hint"] = _error_hint(message, sensitive)
                 return report, 0 if selected is not None else 1
             present = isinstance(models, list) and any(
                 isinstance(item, dict) and item.get("id") == model for item in models
