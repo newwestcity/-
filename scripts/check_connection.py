@@ -25,7 +25,7 @@ DEFAULT_API_BASE = "https://n.tokeness.dev/v1"
 DEFAULT_MODEL = "glm-5.3-flashx"
 # Prefer smaller models for this one-sentence connectivity check. Only IDs
 # actually returned by the authenticated model directory may be selected.
-GPT_CANDIDATES = ("gpt-4.1-mini", "gpt-4o-mini", "gpt-5-mini", "gpt-5-nano",
+GPT_CANDIDATES = ("gpt-6-luna", "gpt-5.6-luna", "gpt-4.1-mini", "gpt-4o-mini", "gpt-5-mini", "gpt-5-nano",
                   "gpt-4.1-nano", "gpt-4.1", "gpt-4o", "gpt-5", "gpt-5.1", "gpt-5.2", "gpt-5.4")
 DEFAULT_REPORT = ".local/connection-report.json"
 REQUEST_TIMEOUT = 120

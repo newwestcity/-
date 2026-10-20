@@ -151,6 +151,12 @@ class CheckConnectionTests(unittest.TestCase):
         self.assertEqual(self.report()['suggested_model'], 'gpt-4.1-mini')
         self.assert_private()
 
+    def test_catalog_selects_a_smaller_model_from_the_providers_actual_gpt_ids(self):
+        self.respond({'data': [{'id': name} for name in ('gpt-6.1-sol', 'gpt-6-astra', 'gpt-6-luna', 'gpt-5.6-luna')]})
+        self.assertEqual(self.run_check('catalog'), 0)
+        self.assertEqual(self.report()['suggested_model'], 'gpt-6-luna')
+        self.opener.open.assert_called_once()
+
     def test_chat_without_completed_model_reply_is_not_success(self):
         responses = [{"error": {"message": self.key}}, {"choices": []},
                      {"choices": [{"finish_reason": "stop", "message": {"content": ""}}]},
