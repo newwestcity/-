@@ -336,7 +336,7 @@ def _probe(mode: str, base: str, model: str, key: str, sensitive: tuple[str, ...
             message = first.get("message") if isinstance(first, dict) else None
             content = message.get("content") if isinstance(message, dict) else None
             reason = first.get("finish_reason") if isinstance(first, dict) else None
-            received = isinstance(content, str) and bool(content.strip()) and reason not in {"length", "content_filter"}
+            received = isinstance(content, str) and bool(content.strip()) and reason == "stop"
             report = {"http_status": status, "model_reply_received": received,
                       "finish_reason": reason if isinstance(reason, str) and reason in KNOWN_FINISH_REASONS else "unrecognized",
                       "daily_digest_ready": False}

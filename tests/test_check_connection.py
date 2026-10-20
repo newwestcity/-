@@ -129,7 +129,10 @@ class CheckConnectionTests(unittest.TestCase):
     def test_chat_without_completed_model_reply_is_not_success(self):
         responses = [{"error": {"message": self.key}}, {"choices": []},
                      {"choices": [{"finish_reason": "stop", "message": {"content": ""}}]},
-                     {"choices": [{"finish_reason": "length", "message": {"content": "partial"}}]}]
+                     {"choices": [{"finish_reason": "length", "message": {"content": "partial"}}]},
+                     {"choices": [{"message": {"content": "partial"}}]},
+                     {"choices": [{"finish_reason": None, "message": {"content": "partial"}}]},
+                     {"choices": [{"finish_reason": "unknown", "message": {"content": "partial"}}]}]
         for data in responses:
             self.respond(data)
             self.assertEqual(self.run_check("chat"), 1)
