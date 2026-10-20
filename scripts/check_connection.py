@@ -246,18 +246,34 @@ def _failure(mode: str, message: str, status: int | None = None) -> dict:
     return report
 
 
-def _request_error_details(exc) -> dict:
-    """Classify a bounded JSON error without publishing its free-form text."""
+def _error_hint(message: str, sensitive: tuple[str, ...]) -> str:
+    # Redact before truncation so an echoed key cannot survive as a prefix.
+    value = _safe_text(message, sensitive)
+    value = "".join(char if char.isprintable() else " " for char in value)
+    value = re.sub(r"(?i)\bbearer\s+\S+", "[redacted]", value)
+    value = re.sub(r"(?i)\bsk-[a-z0-9_-]+", "[redacted]", value)
+    value = re.sub(r"[a-zA-Z][a-zA-Z0-9+.-]*://[^\s<>\"']+", "[url]", value)
+    value = re.sub(r"[\w.+-]+@[\w.-]+\.[a-zA-Z]{2,}", "[email]", value)
+    value = re.sub(r"[a-zA-Z0-9_-]{32,}", "[identifier]", value)
+    value = " ".join(value.split())
+    return _safe_text(value, sensitive)[:500]
+
+
+def _request_error_details(exc, sensitive: tuple[str, ...]) -> dict:
+    """Return a bounded, redacted JSON error message and fixed classification."""
     try:
         raw = exc.read(32769)
         if len(raw) > 32768:
             return {}
         data = json.loads(raw.decode("utf-8"))
         detail = data.get("error", data) if isinstance(data, dict) else None
+        if isinstance(detail, str):
+            detail = {"message": detail}
         if not isinstance(detail, dict):
             return {}
         message = detail.get("message", "")
-        message = message.casefold() if isinstance(message, str) else ""
+        original_message = message if isinstance(message, str) else ""
+        message = original_message.casefold()
         param = detail.get("param")
         allowed_fields = {"model", "messages", "messages[0].role", "tools", "tools[0].type",
                           "max_tokens", "max_completion_tokens", "stream", "response_format"}
@@ -269,7 +285,7 @@ def _request_error_details(exc) -> dict:
             category = "quota_or_balance"
         elif any(word in message for word in ("invalid api key", "invalid_api_key", "无效的令牌", "无效的密钥")):
             category = "credential_rejected"
-        elif param in {"max_tokens", "max_completion_tokens"}:
+        elif isinstance(param, str) and param in {"max_tokens", "max_completion_tokens"}:
             category = "token_parameter_rejected"
         elif param == "model" or any(word in message for word in ("model not found", "model_not_found", "模型不存在")):
             category = "model_rejected"
@@ -279,6 +295,8 @@ def _request_error_details(exc) -> dict:
         ):
             category = "search_tool_parameter_rejected"
         result["error_category"] = category
+        if original_message:
+            result["provider_error_hint"] = _error_hint(original_message, sensitive)
         return result
     except Exception:
         return {}
@@ -346,7 +364,7 @@ def _probe(mode: str, base: str, model: str, key: str, sensitive: tuple[str, ...
         code = exc.code if type(exc.code) is int and 100 <= exc.code <= 599 else None
         report = _failure(mode, "HTTP request was not accepted.", code)
         if code in {400, 422}:
-            report.update(_request_error_details(exc))
+            report.update(_request_error_details(exc, sensitive))
         return report, 1
     except CheckError as exc:
         return _failure(mode, str(exc), status), 1

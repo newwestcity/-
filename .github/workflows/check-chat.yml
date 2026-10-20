@@ -42,8 +42,7 @@ jobs:
               rendered = html.escape(json.dumps(value, ensure_ascii=False, indent=2))
               with open(os.environ['GITHUB_STEP_SUMMARY'], 'a', encoding='utf-8') as stream:
                   stream.write('<h2>普通 API 验证结果</h2><pre>' + rendered + '</pre>')
-              # Publish only fixed diagnostic labels so the failure can be
-              # inspected without access to private runner logs or credentials.
+              # Publish fixed labels and the separately redacted provider hint.
               status = value.get('http_status')
               status = str(status) if type(status) is int and 100 <= status <= 599 else 'unavailable'
               categories = {'no_available_model_channel', 'quota_or_balance',
@@ -62,4 +61,8 @@ jobs:
               received = 'true' if value.get('model_reply_received') is True else 'false'
               print('::notice title=API diagnostic::http_status=' + status + '; category=' + category
                     + '; model_reply_received=' + received + '; finish_reason=' + finish)
+              hint = value.get('provider_error_hint')
+              if isinstance(hint, str) and hint:
+                  hint = hint.replace('%', '%25').replace('\r', '%0D').replace('\n', '%0A')
+                  print('::notice title=Provider error (redacted)::' + hint)
           PY

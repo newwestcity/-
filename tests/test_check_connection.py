@@ -139,15 +139,31 @@ class CheckConnectionTests(unittest.TestCase):
             self.assertFalse(self.report()["model_reply_received"])
         self.assert_private("partial")
 
-    def test_bad_request_exposes_only_safe_classification_not_raw_message(self):
+    def test_bad_request_exposes_classification_and_redacted_message(self):
         error = {"error": {"param": "tools[0].type", "message": "unsupported tool type " + self.key}}
         body = BytesIO(json.dumps(error).encode())
         self.opener.open.side_effect = HTTPError("https://private.test/" + self.key, 400, self.key, {}, body)
         self.assertEqual(self.run_check("search"), 1)
         self.assertEqual(self.report()["rejected_field"], "tools[0].type")
         self.assertEqual(self.report()["error_category"], "search_tool_parameter_rejected")
-        self.assert_private("unsupported tool type", "private.test")
+        self.assertIn("unsupported tool type", self.report()["provider_error_hint"])
+        self.assert_private("private.test")
         self.opener.open.assert_called_once()
+
+    def test_error_hint_redacts_before_truncation_and_strips_other_sensitive_material(self):
+        text = 'word ' * 96 + self.key + ' sk-another-key Bearer other-token student@example.test https://private.test/?key=other-token\nnext'
+        body = BytesIO(json.dumps({"error": {"message": text}}).encode())
+        self.opener.open.side_effect = HTTPError('https://private.test/', 400, self.key, {}, body)
+        self.assertEqual(self.run_check('chat'), 1)
+        hint = self.report()['provider_error_hint']
+        self.assertLessEqual(len(hint), 500)
+        self.assertNotIn('\n', hint)
+        self.assertNotIn(self.key[:8], hint)
+        self.assert_private('sk-another-key', 'other-token', 'student@example.test', 'private.test')
+        short_hint = helper._error_hint('sk-another-key Bearer other-token student@example.test https://private.test/?key=other-token\nnext', (self.key,))
+        for value in ('sk-another-key', 'other-token', 'student@example.test', 'private.test', '\n'):
+            self.assertNotIn(value, short_hint)
+        self.assertNotIn('other-secret', helper._error_hint('upstream: Bearer\x00other-secret', (self.key,)))
 
     def test_unknown_bad_request_fields_and_oversized_errors_are_not_published(self):
         for raw in [json.dumps({"error": {"param": self.key, "message": self.key}}).encode(),
