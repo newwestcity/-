@@ -54,6 +54,15 @@ jobs:
           print('::notice title=X search diagnostic::http_status=' + str(status)
                 + '; search_completed=' + str(completed).lower()
                 + '; x_source_count=' + str(count) + '; daily_digest_ready=false')
+          metrics = {}
+          for name in ('source_record_count', 'x_domain_source_count', 'unrecognized_x_path_count'):
+              metric = value.get(name)
+              metrics[name] = metric if type(metric) is int and metric >= 0 else 0
+          print('::notice title=Search source metadata::' + '; '.join(name + '=' + str(metric) for name, metric in metrics.items()))
+          from scripts.check_connection import _post_url
+          candidates = value.get('unverified_post_urls')
+          candidates = [url for url in candidates if isinstance(url, str) and _post_url(url) == url][:10] if isinstance(candidates, list) else []
+          print('::notice title=Unverified post candidates::' + ', '.join(candidates))
           hint = value.get('provider_error_hint')
           if isinstance(hint, str) and hint:
               summary['provider_error_hint'] = hint[:500]

@@ -174,7 +174,7 @@ class CheckConnectionTests(unittest.TestCase):
         req = self.opener.open.call_args.args[0]
         self.assertEqual(req.full_url, helper.DEFAULT_API_BASE + '/responses')
         self.assertEqual(req.get_method(), 'POST')
-        self.assertEqual(json.loads(req.data)['max_tool_calls'], 1)
+        self.assertEqual(json.loads(req.data)['max_tool_calls'], 2)
         self.assert_private()
 
     def test_responses_search_does_not_trust_generated_urls_or_unfinished_tools(self):
@@ -189,7 +189,28 @@ class CheckConnectionTests(unittest.TestCase):
             self.respond(data)
             self.assertEqual(self.run_check('responses-search'), 1)
             self.assertEqual(self.report()['x_source_count'], 0)
-        self.assert_private('https://x.com/author/status/123')
+        self.assert_private()
+
+    def test_responses_metadata_accepts_web_mobile_and_media_post_links(self):
+        self.respond({'status': 'completed', 'output': [
+            {'type': 'web_search_call', 'status': 'completed', 'action': {'sources': [
+                {'url': 'https://x.com/i/web/status/123'},
+                {'url': 'https://mobile.twitter.com/author/status/456/photo/1'},
+                {'url': 'https://x.com/author/status/456/video/1'},
+            ]}},
+        ]})
+        self.assertEqual(self.run_check('responses-search'), 0)
+        self.assertEqual(self.report()['x_source_count'], 2)
+        self.assertEqual(self.report()['source_record_count'], 3)
+
+    def test_generated_post_candidates_are_diagnostic_only(self):
+        self.respond({'status': 'completed', 'output': [
+            {'type': 'web_search_call', 'status': 'completed', 'action': {}},
+            {'type': 'message', 'content': [{'type': 'output_text', 'text': 'https://x.com/author/status/123'}]},
+        ]})
+        self.assertEqual(self.run_check('responses-search'), 1)
+        self.assertEqual(self.report()['unverified_post_urls'], ['https://x.com/author/status/123'])
+        self.assertEqual(self.report()['x_source_count'], 0)
 
     def test_chat_without_completed_model_reply_is_not_success(self):
         responses = [{"error": {"message": self.key}}, {"choices": []},

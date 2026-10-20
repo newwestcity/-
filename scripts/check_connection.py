@@ -45,6 +45,8 @@ GENERATED_FIELDS = {
 }
 KNOWN_FINISH_REASONS = {"stop", "length", "tool_calls", "function_call", "content_filter"}
 POST_PATH = re.compile(r"/([A-Za-z0-9_]{1,15})/status/([1-9][0-9]{0,24})/?\Z")
+MEDIA_POST_PATH = re.compile(r"/([A-Za-z0-9_]{1,15})/status/([1-9][0-9]{0,24})/(?:photo|video)/[1-9][0-9]*/?\Z")
+WEB_POST_PATH = re.compile(r"/i/web/status/([1-9][0-9]{0,24})/?\Z")
 NOTICE = (
     "Candidate retrieval metadata only; manually verify the provider protocol "
     "and source links. A daily digest is not ready."
@@ -160,10 +162,14 @@ def _post_url(value) -> str | None:
     try:
         parsed = urlsplit(value)
         if parsed.scheme != "https" or parsed.netloc.lower() not in {
-            "x.com", "www.x.com", "twitter.com", "www.twitter.com",
+            "x.com", "www.x.com", "twitter.com", "www.twitter.com", "mobile.twitter.com", "mobile.x.com",
         }:
             return None
-        match = POST_PATH.fullmatch(parsed.path)
+        web_match = WEB_POST_PATH.fullmatch(parsed.path)
+        if web_match:
+            # This URL identifies the post, not its author's handle.
+            return f"https://x.com/i/status/{web_match.group(1)}"
+        match = POST_PATH.fullmatch(parsed.path) or MEDIA_POST_PATH.fullmatch(parsed.path)
         if match is None:
             return None
     except ValueError:
@@ -175,10 +181,10 @@ def _post_url(value) -> str | None:
 def _responses_payload(model: str) -> dict:
     return {
         "model": model, "store": False,
-        "input": "请实际搜索最近48小时 X/Twitter 上一条有学习价值的 AI 或科技原帖，给出原帖引用；找不到就说明，不要编造链接。",
+        "input": "请实际搜索过去7天 X/Twitter 上 OpenAI、AnthropicAI、GoogleDeepMind 等账号有学习价值的 AI/科技原帖，给出至少一条 /status/ 原帖链接与来源引用；找不到就说明，不要编造链接。",
         "tools": [{"type": "web_search", "filters": {"allowed_domains": ["x.com", "twitter.com"]}}],
         "tool_choice": "required", "include": ["web_search_call.action.sources"],
-        "max_tool_calls": 1, "max_output_tokens": 1500,
+        "max_tool_calls": 2, "max_output_tokens": 1500,
     }
 
 
@@ -189,11 +195,27 @@ def _responses_report(data: dict, status: int, sensitive: tuple[str, ...]) -> tu
                 and item.get("type") == "web_search_call" and item.get("status") == "completed"]
     completed = data.get("status") == "completed" and bool(searches)
     urls = set()
+    source_records = 0
+    x_domain_records = 0
+    x_unrecognized_paths = 0
+    generated_candidates = set()
 
     def add_url(value):
+        nonlocal source_records, x_domain_records, x_unrecognized_paths
+        if isinstance(value, str):
+            source_records += 1
+            try:
+                is_x = urlsplit(value).hostname in {'x.com', 'www.x.com', 'twitter.com', 'www.twitter.com', 'mobile.twitter.com', 'mobile.x.com'}
+            except ValueError:
+                is_x = False
+            x_domain_records += int(is_x)
+        else:
+            is_x = False
         url = _post_url(value)
         if url and not any(secret in url for secret in sensitive):
             urls.add(url)
+        elif is_x:
+            x_unrecognized_paths += 1
 
     for item in searches:
         action = item.get("action")
@@ -207,13 +229,23 @@ def _responses_report(data: dict, status: int, sensitive: tuple[str, ...]) -> tu
             if not isinstance(item, dict) or item.get("type") != "message" or not isinstance(item.get("content"), list):
                 continue
             for part in item["content"]:
-                if not isinstance(part, dict) or part.get("type") != "output_text" or not isinstance(part.get("annotations"), list):
+                if not isinstance(part, dict) or part.get("type") != "output_text":
                     continue
-                for annotation in part["annotations"]:
+                text = part.get("text")
+                if isinstance(text, str):
+                    for match in re.finditer(r'https://(?:www\.|mobile\.)?(?:x\.com|twitter\.com)/[^\s<>"\]\)]+', text):
+                        candidate = _post_url(match.group().rstrip('.,;，。；'))
+                        if candidate and not any(secret in candidate for secret in sensitive):
+                            generated_candidates.add(candidate)
+                annotations = part.get("annotations")
+                for annotation in annotations if isinstance(annotations, list) else []:
                     if isinstance(annotation, dict) and annotation.get("type") == "url_citation":
                         add_url(annotation.get("url"))
     report = {"http_status": status, "search_completed": completed,
-              "x_source_count": len(urls) if completed else 0, "daily_digest_ready": False}
+              "x_source_count": len(urls) if completed else 0, "daily_digest_ready": False,
+              "source_record_count": source_records, "x_domain_source_count": x_domain_records,
+              "unrecognized_x_path_count": x_unrecognized_paths,
+              "unverified_post_urls": sorted(generated_candidates)[:10]}
     detail = data.get("error")
     message = detail.get("message") if isinstance(detail, dict) else detail
     if isinstance(message, str):
