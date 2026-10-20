@@ -36,7 +36,7 @@ class AppTests(unittest.TestCase):
         self.addCleanup(self.env.stop)
 
     def test_preview_has_real_pipeline_validation_but_no_mail_or_delivery_record(self):
-        with patch("x_digest.provider.search", return_value=found()), patch("x_digest.app.send_message") as send:
+        with patch("x_digest.provider.search_by_category", return_value=found()), patch("x_digest.app.send_message") as send:
             result = run_digest(self.settings, work_dir=self.work, send=False, now=NOW)
         send.assert_not_called()
         self.assertEqual(result["status"], "preview")
@@ -44,7 +44,7 @@ class AppTests(unittest.TestCase):
         self.assertFalse((self.work / "state.json").exists())
 
     def test_successful_delivery_is_recorded_and_rerun_does_not_search_or_send(self):
-        with patch("x_digest.provider.search", return_value=found()) as search, patch("x_digest.app.send_message") as send:
+        with patch("x_digest.provider.search_by_category", return_value=found()) as search, patch("x_digest.app.send_message") as send:
             first = run_digest(self.settings, work_dir=self.work, send=True, now=NOW)
             second = run_digest(self.settings, work_dir=self.work, send=True, now=NOW)
         self.assertEqual(first["status"], "smtp_accepted")
@@ -54,7 +54,7 @@ class AppTests(unittest.TestCase):
         self.assertEqual(load_state(self.work / "state.json")["deliveries"][0]["post_ids"], [POST_ID])
 
     def test_search_failure_stops_before_mail(self):
-        with patch("x_digest.provider.search", side_effect=ProviderError("test search failure")), patch("x_digest.app.send_message") as send:
+        with patch("x_digest.provider.search_by_category", side_effect=ProviderError("test search failure")), patch("x_digest.app.send_message") as send:
             with self.assertRaises(ProviderError):
                 run_digest(self.settings, work_dir=self.work, send=True, now=NOW)
         send.assert_not_called()
@@ -63,33 +63,33 @@ class AppTests(unittest.TestCase):
     def test_generated_but_uncited_posts_cannot_be_emailed(self):
         response = found()
         response.cited_urls = []
-        with patch("x_digest.provider.search", return_value=response), patch("x_digest.app.send_message") as send:
+        with patch("x_digest.provider.search_by_category", return_value=response), patch("x_digest.app.send_message") as send:
             with self.assertRaisesRegex(ConfigurationError, "没有通过"):
                 run_digest(self.settings, work_dir=self.work, send=True, now=NOW)
         send.assert_not_called()
 
     def test_mail_failure_does_not_consume_posts_or_mark_day_sent(self):
-        with patch("x_digest.provider.search", return_value=found()), patch("x_digest.app.send_message", side_effect=smtplib.SMTPException("test failure")):
+        with patch("x_digest.provider.search_by_category", return_value=found()), patch("x_digest.app.send_message", side_effect=smtplib.SMTPException("test failure")):
             with self.assertRaises(smtplib.SMTPException):
                 run_digest(self.settings, work_dir=self.work, send=True, now=NOW)
         self.assertFalse((self.work / "state.json").exists())
 
     def test_missing_smtp_authorization_stops_before_paid_api_call(self):
         with patch.dict("os.environ", {k: v for k, v in ENV.items() if k != "SMTP_AUTH_CODE"}, clear=True):
-            with patch("x_digest.provider.search") as search:
+            with patch("x_digest.provider.search_by_category") as search:
                 with self.assertRaisesRegex(ConfigurationError, "SMTP_AUTH_CODE"):
                     run_digest(self.settings, work_dir=self.work, send=True, now=NOW)
         search.assert_not_called()
 
     def test_invalid_recipient_stops_before_paid_api_call(self):
         with patch.dict("os.environ", {"MAIL_TO": "invalid-mailbox"}):
-            with patch("x_digest.provider.search") as search:
+            with patch("x_digest.provider.search_by_category") as search:
                 with self.assertRaises(ValueError):
                     run_digest(self.settings, work_dir=self.work, send=True, now=NOW)
         search.assert_not_called()
 
     def test_configuration_check_does_not_contact_services(self):
-        with patch("x_digest.provider.search") as search, patch("x_digest.app.send_message") as send, patch("sys.stdout", new=StringIO()):
+        with patch("x_digest.provider.search_by_category") as search, patch("x_digest.app.send_message") as send, patch("sys.stdout", new=StringIO()):
             self.assertEqual(main(["--check", "--send"]), 0)
         search.assert_not_called()
         send.assert_not_called()

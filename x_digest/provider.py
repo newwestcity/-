@@ -7,6 +7,7 @@ base URL and model. A text-only response is never treated as a completed search.
 
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from http.client import HTTPException
@@ -109,6 +110,9 @@ def _payload(model: str, settings: dict, seen_ids: set[str], now: datetime) -> d
     max_tools = settings.get("max_tool_calls", 6)
     if type(max_tools) is not int or not 1 <= max_tools <= 12:
         raise ProviderError("max_tool_calls 必须是 1 到 12 的整数")
+    max_output = settings.get("max_output_tokens", 10000)
+    if type(max_output) is not int or not 1 <= max_output <= 10000:
+        raise ProviderError("max_output_tokens 必须是 1 到 10000 的整数")
     user_prompt = (
         "请实际调用联网搜索工具，为个人每日阅读邮件寻找 X/Twitter 原帖。\n"
         f"检索时间：{start.isoformat()} 至 {utc_now.isoformat()}，不得使用未来帖子；"
@@ -146,7 +150,7 @@ def _payload(model: str, settings: dict, seen_ids: set[str], now: datetime) -> d
         "include": ["web_search_call.action.sources"],
         "text": {"format": {"type": "json_schema", "name": "daily_x_digest", "strict": True,
                             "schema": _schema(categories)}},
-        "max_output_tokens": 10000,
+        "max_output_tokens": max_output,
         "max_tool_calls": max_tools,
     }
 
@@ -239,6 +243,7 @@ def search(
     settings: dict,
     seen_ids: set[str],
     now: datetime,
+    timeout: float = REQUEST_TIMEOUT,
 ) -> SearchResult:
     """Make one explicit, potentially billed search request; never auto-retry.
 
@@ -246,6 +251,8 @@ def search(
     that this protocol is supported. Missing tool evidence fails closed.
     """
     endpoint = validate_configuration(base_url=base_url, api_key=api_key, model=model)
+    if type(timeout) not in (int, float) or not 0 < timeout <= REQUEST_TIMEOUT:
+        raise ProviderError("搜索超时必须大于 0 且不超过 360 秒")
     body = json.dumps(_payload(model, settings, seen_ids, now), ensure_ascii=False).encode("utf-8")
     try:
         req = request.Request(endpoint, data=body, method="POST", headers={
@@ -254,7 +261,7 @@ def search(
             "Accept": "application/json",
         })
         opener = request.build_opener(_NoRedirects(), request.HTTPSHandler(context=ssl.create_default_context()))
-        with opener.open(req, timeout=REQUEST_TIMEOUT) as response:
+        with opener.open(req, timeout=timeout) as response:
             raw = response.read(MAX_RESPONSE_BYTES + 1)
     except ProviderError:
         raise
@@ -278,3 +285,59 @@ def search(
     except (UnicodeError, ValueError, RecursionError):
         raise ProviderError("搜索接口未返回有效 JSON") from None
     return _parse_response(data, settings["categories"])
+
+
+def search_by_category(
+    *,
+    base_url: str,
+    api_key: str,
+    model: str,
+    settings: dict,
+    seen_ids: set[str],
+    now: datetime,
+) -> SearchResult:
+    """Search each category once, using at most two concurrent requests.
+
+    Each request permits one search tool call. Validate the complete budget and
+    configuration before starting, and keep successful results in category order.
+    """
+    validate_configuration(base_url=base_url, api_key=api_key, model=model)
+    _payload(model, settings, seen_ids, now)
+    categories = settings["categories"]
+    if len(set(categories)) != len(categories):
+        raise ProviderError("内容分类不能重复")
+    if settings.get("max_tool_calls", 6) < len(categories):
+        raise ProviderError("max_tool_calls 不足以覆盖全部分类；未发起检索")
+    target = settings.get("target_count", 10)
+    if type(target) is not int or not 1 <= target <= 100:
+        raise ProviderError("target_count 必须是 1 到 100 的整数")
+    category_settings = [dict(settings, categories=[category], target_count=min(2, target),
+                              max_tool_calls=1, max_output_tokens=3000)
+                         for category in categories]
+    results: list[SearchResult] = []
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        pending = [executor.submit(search, base_url=base_url, api_key=api_key, model=model,
+                                   settings=local_settings, seen_ids=seen_ids, now=now, timeout=120)
+                   for local_settings in category_settings]
+        for future in pending:
+            try:
+                results.append(future.result())
+            except ProviderError:
+                # These errors are already sanitized, but no per-category error
+                # text is included in the merged result or printed to logs.
+                continue
+    if not results:
+        raise ProviderError("所有分类检索均未成功；未自动重试")
+    posts: list[dict] = []
+    cited_urls: list[str] = []
+    usage = {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
+    for result in results:
+        posts.extend(result.posts)
+        for url in result.cited_urls:
+            if url not in cited_urls:
+                cited_urls.append(url)
+        for field in usage:
+            value = result.usage.get(field)
+            if type(value) is int and value >= 0:
+                usage[field] += value
+    return SearchResult(posts, cited_urls, usage)

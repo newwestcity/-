@@ -78,7 +78,7 @@ def delivery_lock(path: Path):
 
 
 def run_digest(settings: dict, *, work_dir: Path, send: bool, now: datetime | None = None) -> dict:
-    from .provider import search
+    from .provider import search_by_category
 
     now = (now or datetime.now(ZoneInfo(settings["timezone"]))).astimezone(ZoneInfo(settings["timezone"]))
     date = now.date().isoformat()
@@ -92,8 +92,8 @@ def run_digest(settings: dict, *, work_dir: Path, send: bool, now: datetime | No
         if missing:
             raise ConfigurationError("缺少安全配置：" + ", ".join(missing))
         seen = seen_post_ids(state, today=now.date(), history_days=settings["history_days"])
-        result = search(base_url=os.environ["DIGEST_API_BASE"], api_key=os.environ["DIGEST_API_KEY"],
-                        model=os.environ["DIGEST_MODEL"], settings=settings, seen_ids=seen, now=now)
+        result = search_by_category(base_url=os.environ["DIGEST_API_BASE"], api_key=os.environ["DIGEST_API_KEY"],
+                                    model=os.environ["DIGEST_MODEL"], settings=settings, seen_ids=seen, now=now)
         diagnostics: dict[str, int] = {}
         posts = select_posts(result.posts, categories=settings["categories"], target_count=settings["target_count"],
                              max_per_category=settings["max_per_category"], max_per_author=settings["max_per_author"],
@@ -130,7 +130,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--settings", type=Path, default=Path("settings.json"))
     parser.add_argument("--work-dir", type=Path, default=Path(".local"))
     parser.add_argument("--check", action="store_true", help="只检查配置，不联网、不发信")
-    parser.add_argument("--fetch", action="store_true", help="执行一次搜索API请求（可能计费）并生成预览")
+    parser.add_argument("--fetch", action="store_true", help="按领域检索（可能计费）并生成预览")
     parser.add_argument("--send", action="store_true", help="与 --fetch 一起使用，向配置的邮箱发送日报")
     args = parser.parse_args(argv)
     if args.send and not (args.fetch or args.check):
