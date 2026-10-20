@@ -42,4 +42,24 @@ jobs:
               rendered = html.escape(json.dumps(value, ensure_ascii=False, indent=2))
               with open(os.environ['GITHUB_STEP_SUMMARY'], 'a', encoding='utf-8') as stream:
                   stream.write('<h2>普通 API 验证结果</h2><pre>' + rendered + '</pre>')
+              # Publish only fixed diagnostic labels so the failure can be
+              # inspected without access to private runner logs or credentials.
+              status = value.get('http_status')
+              status = str(status) if type(status) is int and 100 <= status <= 599 else 'unavailable'
+              categories = {'no_available_model_channel', 'quota_or_balance',
+                            'credential_rejected', 'token_parameter_rejected',
+                            'model_rejected', 'search_tool_parameter_rejected', 'request_rejected'}
+              category = value.get('error_category')
+              if not isinstance(category, str) or category not in categories:
+                  category = {'API credential is missing.': 'credential_missing',
+                              'API credential is invalid.': 'credential_invalid',
+                              'Model configuration is invalid.': 'model_configuration_invalid',
+                              'Connection failed; no retry was attempted.': 'connection_failed',
+                              'Response was not a supported JSON object.': 'response_format_invalid',
+                              'HTTP request was not accepted.': 'http_rejected'}.get(value.get('error'), 'unclassified')
+              finish = value.get('finish_reason')
+              finish = finish if isinstance(finish, str) and finish in {'stop', 'length', 'content_filter', 'tool_calls', 'function_call'} else 'unavailable'
+              received = 'true' if value.get('model_reply_received') is True else 'false'
+              print('::notice title=API diagnostic::http_status=' + status + '; category=' + category
+                    + '; model_reply_received=' + received + '; finish_reason=' + finish)
           PY
