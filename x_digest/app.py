@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import argparse
 from contextlib import contextmanager
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from email.utils import format_datetime, make_msgid
 import json
 import os
@@ -14,12 +14,43 @@ import sys
 from zoneinfo import ZoneInfo
 
 from .mail import build_message, send_message
-from .selection import select_posts
+from .selection import canonical_post_url, select_posts
 from .state import already_sent, load_state, record_delivery, seen_post_ids
 
 
 class ConfigurationError(ValueError):
     pass
+
+
+def _source_inventory(cited_urls, *, seen_ids, settings, now):
+    counts = dict.fromkeys(('citation_recent', 'citation_old', 'citation_future',
+                            'citation_seen', 'citation_blocked', 'citation_invalid'), 0)
+    blocked = {handle.lstrip('@').casefold() for handle in settings.get('blocked_accounts', [])}
+    urls, audit, used = [], [], set()
+    for value in cited_urls:
+        try:
+            url, post_id, handle = canonical_post_url(value)
+            if post_id in used:
+                continue
+            used.add(post_id)
+            published = datetime.fromtimestamp(((int(post_id) >> 22) + 1288834974657) / 1000, timezone.utc)
+        except (ValueError, TypeError, OverflowError, OSError):
+            counts['citation_invalid'] += 1
+            continue
+        if post_id in seen_ids:
+            status = 'seen'
+        elif handle and handle.casefold() in blocked:
+            status = 'blocked'
+        elif published > now + timedelta(minutes=5):
+            status = 'future'
+        elif now - published > timedelta(days=settings.get('max_age_days', 7)):
+            status = 'old'
+        else:
+            status = 'recent'
+            urls.append(url)
+        counts['citation_' + status] += 1
+        audit.append({'url': url, 'published_at': published.isoformat(), 'status': status})
+    return urls, counts, audit
 
 
 def load_settings(path: Path) -> dict:
@@ -94,12 +125,34 @@ def run_digest(settings: dict, *, work_dir: Path, send: bool, now: datetime | No
         seen = seen_post_ids(state, today=now.date(), history_days=settings["history_days"])
         result = search_by_category(base_url=os.environ["DIGEST_API_BASE"], api_key=os.environ["DIGEST_API_KEY"],
                                     model=os.environ["DIGEST_MODEL"], settings=settings, seen_ids=seen, now=now)
+        fresh_urls, inventory, audit = _source_inventory(result.cited_urls, seen_ids=seen,
+                                                        settings=settings, now=now)
+        (work_dir / 'retrieval-audit.json').write_text(json.dumps({'sources': audit}, ensure_ascii=False),
+                                                     encoding='utf-8')
         diagnostics: dict[str, int] = {}
-        posts = select_posts(result.posts, categories=settings["categories"], target_count=settings["target_count"],
-                             max_per_category=settings["max_per_category"], max_per_author=settings["max_per_author"],
-                             blocked_accounts=settings["blocked_accounts"], seen_ids=seen, cited_urls=result.cited_urls,
-                             now=now, max_age_days=settings.get("max_age_days", 7),
-                             max_offer_age_hours=settings.get("max_offer_age_hours", 72), diagnostics=diagnostics)
+        def select_result(value, counts):
+            return select_posts(value.posts, categories=settings["categories"], target_count=settings["target_count"],
+                                max_per_category=settings["max_per_category"], max_per_author=settings["max_per_author"],
+                                blocked_accounts=settings["blocked_accounts"], seen_ids=seen, cited_urls=value.cited_urls,
+                                now=now, max_age_days=settings.get("max_age_days", 7),
+                                max_offer_age_hours=settings.get("max_offer_age_hours", 72), diagnostics=counts)
+        posts = select_result(result, diagnostics)
+        diagnostics.update(inventory)
+        if not posts and fresh_urls:
+            from .oembed import fetch_verified_posts
+            from .provider import curate_verified_posts
+            verified = fetch_verified_posts(fresh_urls, now=now)
+            diagnostics['oembed_verified_posts'] = len(verified)
+            if verified:
+                curated = curate_verified_posts(base_url=os.environ['DIGEST_API_BASE'],
+                                                api_key=os.environ['DIGEST_API_KEY'],
+                                                model=os.environ['DIGEST_MODEL'], settings=settings, posts=verified)
+                curated_counts: dict[str, int] = {}
+                posts = select_result(curated, curated_counts)
+                diagnostics.update({'curated_' + key: value for key, value in curated_counts.items()})
+                result.usage = {field: sum(value for value in (result.usage.get(field), curated.usage.get(field))
+                                          if type(value) is int and value >= 0)
+                                for field in ('input_tokens', 'output_tokens', 'total_tokens')}
         if not posts:
             raise ConfigurationError("没有通过来源、时效和去重检查的帖子；本次停止发信；筛选统计："
                                      + json.dumps(diagnostics, separators=(",", ":")))

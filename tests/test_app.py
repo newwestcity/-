@@ -1,4 +1,4 @@
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from io import StringIO
 import json
 from pathlib import Path
@@ -73,6 +73,45 @@ class AppTests(unittest.TestCase):
             with self.assertRaises(smtplib.SMTPException):
                 run_digest(self.settings, work_dir=self.work, send=True, now=NOW)
         self.assertFalse((self.work / "state.json").exists())
+
+    def test_empty_search_candidates_can_be_edited_from_independently_verified_content(self):
+        retrieved = SimpleNamespace(posts=[], cited_urls=[URL], usage={})
+        verified = {'id': POST_ID, 'url': URL, 'author': 'example', 'text': '官方返回的原帖正文',
+                    'published_at': (NOW - timedelta(hours=1)).isoformat(), 'verified_at': NOW.isoformat()}
+        with patch('x_digest.provider.search_by_category', return_value=retrieved), \
+             patch('x_digest.oembed.fetch_verified_posts', return_value=[verified]) as fetch, \
+             patch('x_digest.provider.curate_verified_posts', return_value=found()) as curate, \
+             patch('x_digest.app.send_message') as send:
+            result = run_digest(self.settings, work_dir=self.work, send=False, now=NOW)
+        self.assertEqual(result['count'], 1)
+        fetch.assert_called_once_with([URL], now=NOW)
+        self.assertEqual(curate.call_args.kwargs['posts'], [verified])
+        send.assert_not_called()
+        self.assertFalse((self.work / 'state.json').exists())
+
+    def test_unverified_content_never_reaches_the_editor_or_mail(self):
+        retrieved = SimpleNamespace(posts=[], cited_urls=[URL], usage={})
+        with patch('x_digest.provider.search_by_category', return_value=retrieved), \
+             patch('x_digest.oembed.fetch_verified_posts', return_value=[]), \
+             patch('x_digest.provider.curate_verified_posts') as curate, \
+             patch('x_digest.app.send_message') as send:
+            with self.assertRaisesRegex(ConfigurationError, 'oembed_verified_posts'):
+                run_digest(self.settings, work_dir=self.work, send=False, now=NOW)
+        curate.assert_not_called()
+        send.assert_not_called()
+
+    def test_old_citations_are_audited_without_billed_editing_or_post_fetches(self):
+        old_id = str((int((NOW - timedelta(days=8)).timestamp() * 1000) - 1288834974657) << 22)
+        retrieved = SimpleNamespace(posts=[], cited_urls=[f'https://x.com/example/status/{old_id}'], usage={})
+        with patch('x_digest.provider.search_by_category', return_value=retrieved), \
+             patch('x_digest.oembed.fetch_verified_posts') as fetch, \
+             patch('x_digest.provider.curate_verified_posts') as curate:
+            with self.assertRaisesRegex(ConfigurationError, '"citation_old":1'):
+                run_digest(self.settings, work_dir=self.work, send=False, now=NOW)
+        fetch.assert_not_called()
+        curate.assert_not_called()
+        audit = json.loads((self.work / 'retrieval-audit.json').read_text())
+        self.assertEqual(audit['sources'][0]['status'], 'old')
 
     def test_missing_smtp_authorization_stops_before_paid_api_call(self):
         with patch.dict("os.environ", {k: v for k, v in ENV.items() if k != "SMTP_AUTH_CODE"}, clear=True):
