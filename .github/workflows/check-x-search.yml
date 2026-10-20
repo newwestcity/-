@@ -14,7 +14,7 @@ jobs:
   search:
     if: github.ref_name == github.event.repository.default_branch
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 8
     env:
       DIGEST_API_BASE: https://n.tokeness.dev/v1
       DIGEST_MODEL: gpt-6-luna
@@ -54,6 +54,13 @@ jobs:
           print('::notice title=X search diagnostic::http_status=' + str(status)
                 + '; search_completed=' + str(completed).lower()
                 + '; x_source_count=' + str(count) + '; daily_digest_ready=false')
+          reason = {'Connection timed out; no retry was attempted.': 'timeout',
+                    'Connection failed; no retry was attempted.': 'connection_failed',
+                    'API credential is missing.': 'credential_missing',
+                    'Response was not a supported JSON object.': 'invalid_json',
+                    'HTTP request was not accepted.': 'http_rejected'}.get(value.get('error'))
+          if reason:
+              print('::notice title=Search failure reason::' + reason)
           metrics = {}
           for name in ('source_record_count', 'x_domain_source_count', 'unrecognized_x_path_count'):
               metric = value.get(name)

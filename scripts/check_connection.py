@@ -184,7 +184,7 @@ def _responses_payload(model: str) -> dict:
         "input": "请实际搜索过去7天 X/Twitter 上 OpenAI、AnthropicAI、GoogleDeepMind 等账号有学习价值的 AI/科技原帖，给出至少一条 /status/ 原帖链接与来源引用；找不到就说明，不要编造链接。",
         "tools": [{"type": "web_search", "filters": {"allowed_domains": ["x.com", "twitter.com"]}}],
         "tool_choice": "required", "include": ["web_search_call.action.sources"],
-        "max_tool_calls": 2, "max_output_tokens": 1500,
+        "max_tool_calls": 1, "max_output_tokens": 1500,
     }
 
 
@@ -419,7 +419,8 @@ def _probe(mode: str, base: str, model: str, key: str, sensitive: tuple[str, ...
         req = request.Request(base + endpoint, data=body, headers=headers, method="GET" if mode in {"api", "catalog"} else "POST")
         # The default SSL context checks both the certificate chain and hostname.
         opener = request.build_opener(NoRedirects(), request.HTTPSHandler(context=ssl.create_default_context()))
-        with opener.open(req, timeout=REQUEST_TIMEOUT) as response:
+        timeout = 240 if mode == "responses-search" else REQUEST_TIMEOUT
+        with opener.open(req, timeout=timeout) as response:
             status = response.status
             if type(status) is not int or not 100 <= status <= 599:
                 status = None
@@ -481,7 +482,12 @@ def _probe(mode: str, base: str, model: str, key: str, sensitive: tuple[str, ...
         return report, 1
     except CheckError as exc:
         return _failure(mode, str(exc), status), 1
-    except (error.URLError, HTTPException, OSError, ValueError):
+    except TimeoutError:
+        return _failure(mode, "Connection timed out; no retry was attempted.", status), 1
+    except error.URLError as exc:
+        message = "Connection timed out; no retry was attempted." if isinstance(exc.reason, TimeoutError) else "Connection failed; no retry was attempted."
+        return _failure(mode, message, status), 1
+    except (HTTPException, OSError, ValueError):
         return _failure(mode, "Connection failed; no retry was attempted.", status), 1
     except Exception:
         # Third-party error text and malicious malformed responses never reach logs.

@@ -14,7 +14,7 @@
 
 `https://n.tokeness.dev/v1` 与 `gpt-6-luna` 的普通对话已[实测成功](https://github.com/newwestcity/-/actions/runs/39462398796)：HTTP 200、非空回复、`finish_reason=stop`。这把密钥的目录列出了 GPT 6 等型号，未列出先前预设的 GPT 4/5 mini 型号。
 
-[X 搜索验证](https://github.com/newwestcity/-/actions/workflows/check-x-search.yml)独立测试一次标准 Responses `web_search`（最多两次工具调用），只有完整搜索记录与独立 X 原帖引用同时存在才通过；正文链接仅列为未验证候选，不会让检查通过。同时仅显示邮件变量/授权码是否存在，不公开它们的值、不连接 SMTP。此验证不启用每日发送。
+[X 搜索验证](https://github.com/newwestcity/-/actions/workflows/check-x-search.yml)独立测试一次标准 Responses `web_search`（最多一次工具调用，240 秒超时），只有完整搜索记录与独立 X 原帖引用同时存在才通过；正文链接仅列为未验证候选，不会让检查通过。同时仅显示邮件变量/授权码是否存在，不公开它们的值、不连接 SMTP。此验证不启用每日发送。
 
 此步骤在 GitHub 自己的执行机器上运行，与 Codex 开发环境的保存、发布分开。当前 Codex 执行机器仍无法连到 `n.tokeness.dev`，请求被网络代理拒绝；这不能判断 Tokeness 本身或密钥是否正常。
 
