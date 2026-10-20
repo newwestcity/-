@@ -41,8 +41,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     env:
-      DIGEST_API_BASE: ${{ vars.DIGEST_API_BASE }}
-      DIGEST_MODEL: ${{ vars.DIGEST_MODEL }}
+      DIGEST_API_BASE: ${{ vars.DIGEST_API_BASE || 'https://n.tokeness.dev/v1' }}
+      DIGEST_MODEL: ${{ vars.DIGEST_MODEL || 'gpt-6-luna' }}
       DIGEST_API_KEY: ${{ secrets.DIGEST_API_KEY }}
       SMTP_USERNAME: ${{ vars.SMTP_USERNAME }}
       SMTP_AUTH_CODE: ${{ secrets.SMTP_AUTH_CODE }}

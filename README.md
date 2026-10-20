@@ -67,7 +67,7 @@ python3 -m x_digest --fetch --send
 准备接入时，在 GitHub 仓库的 **Settings → Secrets and variables → Actions** 配置：
 
 - Secrets：`DIGEST_API_KEY`、`SMTP_AUTH_CODE`。
-- Variables：`DIGEST_API_BASE`、`DIGEST_MODEL`、`SMTP_USERNAME`、`MAIL_TO`。
+- Variables：`SMTP_USERNAME` 必填；`MAIL_TO` 可选，默认发给自己。`DIGEST_API_BASE`、`DIGEST_MODEL` 可选覆盖；工作流已内置成功调用的 Tokeness 地址与 `gpt-6-luna`。这不代表 X 原帖检索已验证通过。
 - 开通 QQ 邮箱 SMTP 后，授权码只填入 Secrets。不要写入仓库、聊天或工作流正文。
 
 也可使用 [配置助手](scripts/configure_github.py) 代填普通字段：先在可访问 GitHub API 的执行环境中配置 `gh` 登录和非敏感变量 `SMTP_USERNAME`，再运行：
