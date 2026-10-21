@@ -1,4 +1,4 @@
-name: 邮箱连接测试
+name: QQ 邮箱连接测试
 
 on:
   push:
