@@ -297,6 +297,57 @@ class CategorySearchTests(unittest.TestCase):
         self.assertEqual(run.call_count, len(SETTINGS["categories"]))
         self.assertNotIn(SECRET, str(raised.exception))
         self.assertIn("所有分类", str(raised.exception))
+        self.assertEqual(json.loads(str(raised.exception).split("；诊断=", 1)[1]), {"other": 2})
+
+    def test_all_failures_include_only_fixed_diagnostic_code_counts(self):
+        failures = [
+            ("分类一", "检索未返回独立的 X 原帖引用，无法核实候选链接"),
+            ("分类二", "模型输出不是要求的 JSON，未生成邮件"),
+            ("分类三", "搜索响应未完整完成，未生成邮件"),
+            ("分类四", "接口未返回已完成的联网搜索记录，无法确认它支持搜索"),
+            ("分类五", "候选帖子字段或分类无效"),
+            ("分类六", "搜索请求连接失败或超时；未自动重试，请检查网络及服务配置"),
+        ]
+        messages = dict(failures)
+
+        def fail(**kwargs):
+            raise provider.ProviderError(messages[kwargs["settings"]["categories"][0]])
+
+        with patch.object(provider, "search", side_effect=fail) as run:
+            with self.assertRaises(provider.ProviderError) as raised:
+                self.call(dict(SETTINGS, categories=list(messages), max_tool_calls=6))
+        self.assertEqual(run.call_count, 6)
+        text = str(raised.exception)
+        self.assertEqual(text.split("；诊断=", 1)[1],
+                         '{"incomplete":1,"invalid_posts":1,"network":1,"no_sources":1,"no_tool":1,"not_json":1}')
+        for category in messages:
+            self.assertNotIn(category, text)
+
+    def test_http_diagnostics_extract_only_status_digits_and_never_remote_text(self):
+        faults = {"AI": provider.ProviderError(SECRET + " https://relay.example/?key=" + SECRET
+                                              + "（HTTP 429）；未自动重试"),
+                  "读书": provider.ProviderError("HTTP 666 unknown " + SECRET)}
+
+        def fail(**kwargs):
+            raise faults[kwargs["settings"]["categories"][0]]
+
+        with patch.object(provider, "search", side_effect=fail) as run:
+            with self.assertRaises(provider.ProviderError) as raised:
+                self.call()
+        self.assertEqual(run.call_count, 2)
+        text = str(raised.exception)
+        self.assertEqual(json.loads(text.split("；诊断=", 1)[1]), {"HTTP429": 1, "other": 1})
+        self.assertNotIn(SECRET, text)
+        self.assertNotIn("relay.example", text)
+
+    def test_known_error_text_with_added_remote_content_is_not_echoed_or_prefix_matched(self):
+        fault = provider.ProviderError("检索未返回独立的 X 原帖引用，无法核实候选链接 " + SECRET)
+        with patch.object(provider, "search", side_effect=fault) as run:
+            with self.assertRaises(provider.ProviderError) as raised:
+                self.call()
+        self.assertEqual(run.call_count, 2)
+        self.assertEqual(json.loads(str(raised.exception).split("；诊断=", 1)[1]), {"other": 2})
+        self.assertNotIn(SECRET, str(raised.exception))
 
     def test_budget_and_local_configuration_are_checked_before_any_request(self):
         invalid = [dict(SETTINGS, max_tool_calls=1), dict(SETTINGS, max_tool_calls=True),

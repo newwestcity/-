@@ -26,8 +26,23 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
         with:
           python-version: '3.12'
-      - name: 一次 Responses 搜索验证
-        run: python scripts/check_connection.py --mode responses-search
+      - name: 单领域请求诊断（日报参数，仅调用一次）
+        run: |
+          python - <<'PY'
+          from datetime import datetime, timezone
+          from pathlib import Path
+          from scripts import check_connection
+          from x_digest.app import load_settings
+          from x_digest.provider import _payload
+
+          settings = dict(load_settings(Path('settings.json')), categories=['AI'],
+                          target_count=2, max_tool_calls=1, max_output_tokens=3000)
+          # Use the actual production request to isolate the failure, with the
+          # diagnostic helper's bounded and redacted HTTP error reporting.
+          check_connection._responses_payload = lambda model: _payload(
+              model, settings, set(), datetime.now(timezone.utc))
+          raise SystemExit(check_connection.main(['--mode', 'responses-search']))
+          PY
       - name: 显示搜索验证结果
         if: always()
         run: |

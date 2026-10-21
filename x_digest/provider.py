@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from http.client import HTTPException
 import json
+import re
 import ssl
 from urllib import error, request
 from urllib.parse import urlsplit
@@ -340,6 +341,28 @@ def search(
     return _parse_response(data, settings["categories"])
 
 
+def _search_failure_code(exc: ProviderError) -> str:
+    """Reduce errors to fixed diagnostic labels; never return exception text."""
+    message = str(exc)
+    fixed_codes = {
+        "检索未返回独立的 X 原帖引用，无法核实候选链接": "no_sources",
+        "模型输出不是要求的 JSON，未生成邮件": "not_json",
+        "搜索接口未返回有效 JSON": "not_json",
+        "搜索响应未完整完成，未生成邮件": "incomplete",
+        "搜索响应缺少结构化输出": "incomplete",
+        "接口未返回已完成的联网搜索记录，无法确认它支持搜索": "no_tool",
+        "候选帖子数据格式无效": "invalid_posts",
+        "候选帖子字段或分类无效": "invalid_posts",
+        "搜索响应超出大小限制，未解析截断内容": "invalid_posts",
+        "搜索请求连接失败或超时；未自动重试，请检查网络及服务配置": "network",
+        "搜索接口发生重定向；为保护凭据，已停止请求": "network",
+    }
+    if message in fixed_codes:
+        return fixed_codes[message]
+    status = re.search(r"（HTTP ([1-5][0-9]{2})）；未自动重试\Z", message)
+    return "HTTP" + status.group(1) if status else "other"
+
+
 def search_by_category(
     *,
     base_url: str,
@@ -368,6 +391,7 @@ def search_by_category(
                               max_tool_calls=1, max_output_tokens=3000)
                          for category in categories]
     results: list[SearchResult] = []
+    failure_counts: dict[str, int] = {}
     with ThreadPoolExecutor(max_workers=2) as executor:
         pending = [executor.submit(search, base_url=base_url, api_key=api_key, model=model,
                                    settings=local_settings, seen_ids=seen_ids, now=now, timeout=120)
@@ -375,12 +399,15 @@ def search_by_category(
         for future in pending:
             try:
                 results.append(future.result())
-            except ProviderError:
-                # These errors are already sanitized, but no per-category error
-                # text is included in the merged result or printed to logs.
+            except ProviderError as exc:
+                code = _search_failure_code(exc)
+                failure_counts[code] = failure_counts.get(code, 0) + 1
+                # Only fixed diagnostic codes are retained, never category names
+                # or exception text, which might originate from an unknown relay.
                 continue
     if not results:
-        raise ProviderError("所有分类检索均未成功；未自动重试")
+        diagnostic = json.dumps(failure_counts, sort_keys=True, separators=(",", ":"))
+        raise ProviderError("所有分类检索均未成功；未自动重试；诊断=" + diagnostic)
     posts: list[dict] = []
     cited_urls: list[str] = []
     usage = {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
