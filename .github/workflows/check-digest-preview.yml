@@ -1,134 +1,63 @@
-name: 生成完整日报预览
-
+name: 阅读与项目完整预览
 on:
   push:
     branches: [main]
-    paths:
-      - '.github/workflows/check-digest-preview.yml'
+    paths: ['.github/workflows/check-digest-preview.yml']
   workflow_dispatch:
-
 permissions:
   contents: read
-
 jobs:
   preview:
     if: github.ref_name == github.event.repository.default_branch
+    strategy:
+      fail-fast: false
+      matrix:
+        edition: [daily, weekly]
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 25
     env:
-      DIGEST_API_BASE: https://n.tokeness.dev/v1
-      DIGEST_MODEL: gpt-6-luna
+      DIGEST_API_BASE: ${{ vars.DIGEST_API_BASE || 'https://n.tokeness.dev/v1' }}
+      DIGEST_MODEL: ${{ vars.DIGEST_MODEL || 'gpt-6-luna' }}
       DIGEST_API_KEY: ${{ secrets.DIGEST_API_KEY }}
       SMTP_USERNAME: preview@example.invalid
+      GH_TOKEN: ${{ github.token }}
+      EDITION: ${{ matrix.edition }}
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
         with:
           python-version: '3.12'
-      - name: 分领域抓取并生成完整日报预览
-        run: |
-          python - <<'PY'
-          from collections import Counter
-          from contextlib import redirect_stderr, redirect_stdout
-          from datetime import datetime, timedelta, timezone
-          import html
-          from io import StringIO
-          import json
-          import os
-          from pathlib import Path
-
-          from x_digest import app
-          from x_digest.selection import canonical_post_url
-
-          def escape_annotation(value):
-              return value.replace('%', '%25').replace('\r', '%0D').replace('\n', '%0A')
-
-          output, errors = StringIO(), StringIO()
-          try:
-              with redirect_stdout(output), redirect_stderr(errors):
-                  code = app.main(['--fetch'])
-          except Exception:
-              print('::error title=Digest preview failed::Unexpected failure while generating the preview.')
-              raise SystemExit(1)
-          print('::notice title=Delivery status::mail_sent=false')
-          if code != 0:
-              message = errors.getvalue().strip() or output.getvalue().strip() or 'Digest preview failed.'
-              print('::error title=Digest preview failed::' + escape_annotation(message))
-              raise SystemExit(code)
-
-          try:
-              settings = app.load_settings(Path('settings.json'))
-              data = json.loads(Path('.local/preview/digest.json').read_text(encoding='utf-8'))
-              posts = data.get('posts') if isinstance(data, dict) else None
-              if not isinstance(posts, list) or not 1 <= len(posts) <= settings['target_count']:
-                  raise ValueError('Invalid preview post count')
-              public_posts = []
-              for post in posts:
-                  if not isinstance(post, dict):
-                      raise ValueError('Invalid preview post')
-                  category = post.get('category')
-                  if not isinstance(category, str) or category not in settings['categories']:
-                      raise ValueError('Invalid preview category')
-                  url, post_id, _ = canonical_post_url(post.get('url'))
-                  published = datetime.fromisoformat(post['published_at'])
-                  verified = datetime.fromisoformat(post['verified_at'])
-                  expected = datetime(2010, 11, 4, 1, 42, 54, 657000, tzinfo=timezone.utc) + timedelta(milliseconds=int(post_id) >> 22)
-                  kind = post.get('reading_kind')
-                  if (published.utcoffset() is None or verified.utcoffset() is None
-                          or published != expected or post.get('id') != post_id
-                          or kind not in {'recent', 'classic'}
-                          or (kind == 'classic' and category not in settings.get('classic_categories', []))):
-                      raise ValueError('Invalid verified post metadata')
-                  public_posts.append((category, url))
-          except (OSError, ValueError, KeyError, TypeError):
-              print('::error title=Digest preview failed::Generated preview could not be validated.')
-              raise SystemExit(1)
-
-          counts = Counter(category for category, _ in public_posts)
-          classic_count = sum(post.get('reading_kind') == 'classic' for post in posts)
-          if classic_count > settings.get('max_classic_count', 0):
-              print('::error::Classic reading count exceeded the configured limit.')
-              raise SystemExit(1)
-          summary = {'post_count': len(public_posts),
-                     'recent_count': len(posts) - classic_count,
-                     'classic_count': classic_count,
-                     'official_post_metadata_valid': True,
-                     'category_counts': {category: counts[category] for category in settings['categories']}}
-          print('::notice title=Digest preview::' + escape_annotation(json.dumps(summary, ensure_ascii=False)))
-          for category, url in public_posts:
-              print('::notice title=Canonical X post::' + escape_annotation(category + ' ' + url))
-          rendered = html.escape(json.dumps(summary, ensure_ascii=False, indent=2))
-          with open(os.environ['GITHUB_STEP_SUMMARY'], 'a', encoding='utf-8') as stream:
-              stream.write('<h2>日报预览统计</h2><pre>' + rendered + '</pre>')
-          PY
-      - name: 显示原始检索来源日期（不代表已入选）
-        if: always()
-        run: |
-          python - <<'PY'
-          from datetime import datetime
-          import json
-          from pathlib import Path
-          from x_digest.selection import canonical_post_url
-          path = Path('.local/retrieval-audit.json')
-          if path.exists():
-              data = json.loads(path.read_text(encoding='utf-8'))
-              for item in data.get('sources', [])[:30]:
-                  try:
-                      url, _, _ = canonical_post_url(item['url'])
-                      published = datetime.fromisoformat(item['published_at']).isoformat()
-                      status = item['status']
-                      if status not in {'recent', 'old', 'future', 'seen', 'blocked'}:
-                          continue
-                  except (ValueError, KeyError, TypeError):
-                      continue
-                  print('::notice title=Retrieved source (unreviewed)::' + url + '; published=' + published + '; status=' + status)
-          PY
-      - name: 保存 HTML 预览
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+      - run: python -m unittest discover -s tests -q
+      - uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25
+        id: history
         with:
-          name: digest-preview
-          path: .local/preview/digest.html
+          path: |
+            .local/state.json
+            .local/reading-state.json
+          key: reading-history-v2-preview-${{ github.run_id }}-${{ matrix.edition }}
+          restore-keys: |
+            reading-history-v2-
+      - name: 首次升级导入旧X历史
+        if: steps.history.outputs.cache-matched-key == ''
+        uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25
+        with:
+          path: .local/state.json
+          key: x-digest-history-v1-migrate-${{ github.run_id }}
+          restore-keys: x-digest-history-v1-
+      - name: 雪球公开页面结构诊断（不执行挑战脚本）
+        if: matrix.edition == 'daily'
+        run: python scripts/inspect_xueqiu_access.py
+      - name: 实际检索、原文评审与预览（不发邮件）
+        run: python scripts/preview_reading.py
+      - name: 保存阅读预览
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: reading-preview-${{ matrix.edition }}
+          path: |
+            .local/preview/digest.html
+            .local/reading-audit.json
           retention-days: 7
-          if-no-files-found: error
+          if-no-files-found: ignore

@@ -187,6 +187,24 @@ class GitHubProjectTests(unittest.TestCase):
         self.assertEqual(result.diagnostics["readmes_requested"], 20)
         self.assertLessEqual(maximum, 2)
 
+    def test_history_is_casefolded_and_excluded_before_readme_limit_with_candidate_dedup(self):
+        repositories = [metadata("Example/Already-Sent", stargazers_count=50000),
+                        metadata("Example/New-First", stargazers_count=2000),
+                        metadata("example/new-first", stargazers_count=2000),
+                        metadata("Example/New-Second", stargazers_count=1000)]
+        opener = self.service(repositories)
+        with patch.object(github.request, "build_opener", return_value=opener):
+            result = github.fetch_projects(now=NOW, limit=2,
+                                           seen_ids={"GITHUB:EXAMPLE/ALREADY-SENT", "github:Example/Already-Sent"})
+        self.assertEqual({project["id"] for project in result.projects},
+                         {"github:example/new-first", "github:example/new-second"})
+        paths = [urlsplit(call.args[0].full_url).path for call in opener.open.call_args_list]
+        readme_paths = [path for path in paths if path.endswith("/readme")]
+        self.assertEqual(set(readme_paths), {"/repos/Example/New-First/readme", "/repos/Example/New-Second/readme"})
+        self.assertEqual(len(readme_paths), 2)
+        self.assertEqual(result.diagnostics["api_requests"], 5)
+        self.assertEqual(result.diagnostics["excluded_previously_seen"], 1)
+
     def test_authentication_or_rate_errors_stop_further_requests_without_echo(self):
         for status, label in ((401, "credential_rejected"), (403, "rate_limited_or_forbidden"),
                               (429, "rate_limited_or_forbidden")):
@@ -215,7 +233,11 @@ class GitHubProjectTests(unittest.TestCase):
     def test_invalid_configuration_stops_before_network(self):
         with patch.object(github.request, "build_opener") as build:
             for overrides in ({"limit": 21}, {"limit": True}, {"token": "bad\n" + TOKEN},
-                              {"now": datetime(2026, 10, 21)}, {"previous_snapshot": {"stars": {}}}):
+                              {"now": datetime(2026, 10, 21)}, {"previous_snapshot": {"stars": {}}},
+                              {"seen_ids": ["github:example/tool"]}, {"seen_ids": {True}},
+                              {"seen_ids": {"x:example/tool"}}, {"seen_ids": {"github:Example/.."}},
+                              {"seen_ids": {"github:Example/tool/extra"}},
+                              {"seen_ids": {"github:Example/tool/"}}):
                 with self.subTest(overrides=overrides), self.assertRaises(ValueError) as raised:
                     github.fetch_projects(**{"now": NOW, **overrides})
                 self.assertNotIn(TOKEN, str(raised.exception))

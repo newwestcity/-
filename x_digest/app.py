@@ -62,6 +62,9 @@ def load_settings(path: Path) -> dict:
         raise ConfigurationError("categories 必须是非空分类列表")
     if len(set(categories)) != len(categories):
         raise ConfigurationError("分类不能重复")
+    for key, limit in (("max_age_days", 7), ("max_offer_age_hours", 72)):
+        if type(value.get(key)) is not int or not 1 <= value[key] <= limit:
+            raise ConfigurationError("近期阅读与优惠的时效配置无效")
     for name in ("target_count", "max_per_category", "max_per_author", "history_days"):
         number = value.get(name)
         if type(number) is not int or not 1 <= number <= 100:
@@ -80,6 +83,16 @@ def load_settings(path: Path) -> dict:
             or (classic_limit and not classic_categories)):
         raise ConfigurationError("经典阅读仅允许股市、投资、读书，数量必须为0到3条")
     ZoneInfo(value["timezone"])
+    if "reading" in value:
+        reading = value["reading"]
+        if not isinstance(reading, dict):
+            raise ConfigurationError("reading 必须是配置对象")
+        for key, low, high in (("xueqiu_target", 3, 4), ("xueqiu_max_age_days", 1, 30),
+                               ("history_days", 1, 180)):
+            if type(reading.get(key)) is not int or not low <= reading[key] <= high:
+                raise ConfigurationError("阅读配置的条数、时效或历史天数无效")
+        if value["target_count"] > 20:
+            raise ConfigurationError("阅读模式每个来源最多20篇")
     return value
 
 
@@ -220,12 +233,13 @@ def run_digest(settings: dict, *, work_dir: Path, send: bool, now: datetime | No
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="X 帖子每日精选：检查配置、生成预览或发送邮件")
+    parser = argparse.ArgumentParser(description="每日阅读与每周 GitHub 项目：检查配置、生成预览或发信")
     parser.add_argument("--settings", type=Path, default=Path("settings.json"))
     parser.add_argument("--work-dir", type=Path, default=Path(".local"))
     parser.add_argument("--check", action="store_true", help="只检查配置，不联网、不发信")
     parser.add_argument("--fetch", action="store_true", help="按领域检索（可能计费）并生成预览")
     parser.add_argument("--send", action="store_true", help="与 --fetch 一起使用，向配置的邮箱发送日报")
+    parser.add_argument("--edition", choices=("daily", "weekly"), default="daily", help="日报或每周项目刊")
     args = parser.parse_args(argv)
     if args.send and not (args.fetch or args.check):
         parser.error("--send 需要搭配 --fetch 或 --check")
@@ -243,7 +257,13 @@ def main(argv: list[str] | None = None) -> int:
                 return 2
             print("本地配置检查通过；API搜索和SMTP尚需实际验证。")
             return 0
-        result = run_digest(settings, work_dir=args.work_dir, send=args.send)
+        if "reading" in settings:
+            from .reading import run_reading
+            result = run_reading(settings, work_dir=args.work_dir, send=args.send, edition=args.edition)
+        elif args.edition == "weekly":
+            raise ConfigurationError("每周项目刊需要reading配置")
+        else:
+            result = run_digest(settings, work_dir=args.work_dir, send=args.send)
         print(json.dumps(result, ensure_ascii=False))
         return 0
     except smtplib.SMTPException:

@@ -1,1 +1,1 @@
-"""Personal X reading digest. Importing this package never contacts a service."""
+"""Personal reading and learning digests. Imports never contact a service."""

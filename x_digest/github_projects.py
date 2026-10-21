@@ -326,11 +326,14 @@ def compute_growth(projects: list[dict], previous_snapshot: dict | None, *, now:
 
 
 def fetch_projects(*, now: datetime, limit: int = MAX_PROJECTS, token: str | None = None,
-                   previous_snapshot: dict | None = None) -> ProjectFetchResult:
+                   previous_snapshot: dict | None = None,
+                   seen_ids: set[str] | None = None) -> ProjectFetchResult:
     """Read at most three searches and twenty READMEs, at most two concurrently.
 
     Public metadata and a recognized license are required. README evidence is a
     learning aid, not a claim that the project was installed or successfully run.
+    Previously sent GitHub IDs are compared without case distinctions and
+    excluded before the README budget is allocated to the remaining candidates.
     """
     current = _aware(now)
     if type(limit) is not int or not 1 <= limit <= MAX_PROJECTS:
@@ -338,6 +341,15 @@ def fetch_projects(*, now: datetime, limit: int = MAX_PROJECTS, token: str | Non
     if token is not None and (not isinstance(token, str) or not token.strip()
                               or any(char.isspace() for char in token)):
         raise ValueError("GitHub token configuration is invalid")
+    if seen_ids is not None and not isinstance(seen_ids, set):
+        raise ValueError("GitHub history must be a set of repository IDs")
+    seen = set()
+    for project_id in seen_ids or set():
+        if (not isinstance(project_id, str) or project_id[:7].casefold() != "github:"
+                or not _NAME.fullmatch(project_id[7:])):
+            raise ValueError("Invalid GitHub history repository ID")
+        canonical_repository_url("https://github.com/" + project_id[7:])
+        seen.add(project_id.casefold())
     # Validate an optional baseline before any external requests.
     compute_growth([], previous_snapshot, now=current)
     client = _Client(token)
@@ -364,7 +376,9 @@ def fetch_projects(*, now: datetime, limit: int = MAX_PROJECTS, token: str | Non
             project = _metadata(item, now=current, client=client)
             if project is not None:
                 candidates.setdefault(project["id"], project)
-    ranked = sorted(candidates.values(), key=lambda item: (-item["popularity_proxy"]["score"], item["id"]))
+    unseen = [project for project in candidates.values() if project["id"] not in seen]
+    client.count("excluded_previously_seen", len(candidates) - len(unseen))
+    ranked = sorted(unseen, key=lambda item: (-item["popularity_proxy"]["score"], item["id"]))
     with ThreadPoolExecutor(max_workers=2) as executor:
         projects = [item for item in executor.map(lambda project: _readme(project, client=client), ranked[:limit])
                     if item is not None]
