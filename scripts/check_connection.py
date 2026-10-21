@@ -245,6 +245,7 @@ def _responses_report(data: dict, status: int, sensitive: tuple[str, ...]) -> tu
               "x_source_count": len(urls) if completed else 0, "daily_digest_ready": False,
               "source_record_count": source_records, "x_domain_source_count": x_domain_records,
               "unrecognized_x_path_count": x_unrecognized_paths,
+              "source_post_urls": sorted(urls)[:MAX_SOURCE_LINKS] if completed else [],
               "unverified_post_urls": sorted(generated_candidates)[:10]}
     detail = data.get("error")
     message = detail.get("message") if isinstance(detail, dict) else detail

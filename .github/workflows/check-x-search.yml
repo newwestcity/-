@@ -82,6 +82,17 @@ jobs:
               metrics[name] = metric if type(metric) is int and metric >= 0 else 0
           print('::notice title=Search source metadata::' + '; '.join(name + '=' + str(metric) for name, metric in metrics.items()))
           from scripts.check_connection import _post_url
+          from datetime import datetime, timezone
+          from x_digest.app import _source_inventory, load_settings
+          sources = value.get('source_post_urls')
+          sources = [url for url in sources if isinstance(url, str) and _post_url(url) == url][:100] if isinstance(sources, list) else []
+          _, inventory, audit = _source_inventory(sources, seen_ids=set(),
+                                                settings=load_settings(Path('settings.json')),
+                                                now=datetime.now(timezone.utc))
+          print('::notice title=Source age diagnostic::' + json.dumps(inventory))
+          for item in audit[:10]:
+              print('::notice title=Retrieved source (unreviewed)::' + item['url']
+                    + '; published=' + item['published_at'] + '; status=' + item['status'])
           candidates = value.get('unverified_post_urls')
           candidates = [url for url in candidates if isinstance(url, str) and _post_url(url) == url][:10] if isinstance(candidates, list) else []
           print('::notice title=Unverified post candidates::' + ', '.join(candidates))

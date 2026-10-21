@@ -168,6 +168,8 @@ class CheckConnectionTests(unittest.TestCase):
         ]})
         self.assertEqual(self.run_check('responses-search'), 0)
         self.assertEqual(self.report()['x_source_count'], 2)
+        self.assertEqual(self.report()['source_post_urls'],
+                         ['https://x.com/author/status/123', 'https://x.com/second/status/456'])
         self.assertTrue(self.report()['search_completed'])
         self.assertFalse(self.report()['daily_digest_ready'])
         self.opener.open.assert_called_once()
@@ -189,6 +191,7 @@ class CheckConnectionTests(unittest.TestCase):
             self.respond(data)
             self.assertEqual(self.run_check('responses-search'), 1)
             self.assertEqual(self.report()['x_source_count'], 0)
+            self.assertEqual(self.report()['source_post_urls'], [])
         self.assert_private()
 
     def test_responses_metadata_accepts_web_mobile_and_media_post_links(self):
