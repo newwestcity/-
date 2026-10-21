@@ -1,0 +1,30 @@
+name: 读取周刊编辑诊断
+on:
+  push:
+    paths: ['.github/workflows/read-weekly-diagnostic.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+jobs:
+  read:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: 下载本仓库已生成的脱敏审计文件（不调用模型或SMTP）
+        run: gh run download 39621638121 --repo newwestcity/- --name reading-preview-weekly --dir diagnostic
+      - name: 显示固定编辑错误码
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          paths = list(Path('diagnostic').rglob('reading-audit.json'))
+          if len(paths) != 1 or paths[0].stat().st_size > 65536:
+              raise SystemExit('Unexpected diagnostic artifact')
+          data = json.loads(paths[0].read_text())
+          allowed = {'api_requests', 'searches_succeeded', 'readmes_requested', 'projects_verified', 'editor_failed', 'editor_error'}
+          report = {key: value for key, value in data['diagnostics'].items() if key in allowed}
+          print('::notice title=Weekly editor diagnostic::' + json.dumps(report, separators=(',', ':')))
+          PY
