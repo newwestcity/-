@@ -32,6 +32,13 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
         with:
           python-version: '3.12'
+      - name: 显示密钥是否已配置（不显示内容）
+        run: |
+          python - <<'PY'
+          import os
+          configured = bool(os.environ.get('DIGEST_API_KEY', '').strip())
+          print('::notice title=API configuration::api_key_configured=' + str(configured).lower())
+          PY
       - name: 读取此密钥可用的 GPT 型号
         run: python scripts/check_connection.py --mode catalog --report .local/model-catalog.json
       - name: 使用目录中列出的型号
@@ -93,6 +100,10 @@ jobs:
               print('::notice title=API diagnostic::http_status=' + status + '; category=' + category
                     + '; model_directory_received=' + catalog_received
                     + '; model_reply_received=' + received + '; finish_reason=' + finish)
+              from scripts.check_connection import GPT_CANDIDATES
+              suggested = value.get('suggested_model')
+              if catalog_received == 'true' and suggested in GPT_CANDIDATES:
+                  print('::notice title=Available API model::' + suggested)
               hint = value.get('provider_error_hint')
               if isinstance(hint, str) and hint:
                   hint = hint.replace('%', '%25').replace('\r', '%0D').replace('\n', '%0A')
