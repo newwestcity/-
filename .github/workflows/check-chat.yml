@@ -1,4 +1,4 @@
-name: 验证普通 API 调用
+name: 检查 API 密钥与普通调用
 
 on:
   push:
@@ -6,6 +6,12 @@ on:
     paths:
       - '.github/workflows/check-chat.yml'
   workflow_dispatch:
+    inputs:
+      chat_call:
+        description: '额外调用一次模型（可能计费）；不勾选则只读取模型目录'
+        type: boolean
+        required: true
+        default: false
 
 permissions:
   contents: read
@@ -29,6 +35,7 @@ jobs:
       - name: 读取此密钥可用的 GPT 型号
         run: python scripts/check_connection.py --mode catalog --report .local/model-catalog.json
       - name: 使用目录中列出的型号
+        if: github.event_name == 'workflow_dispatch' && inputs.chat_call == true
         run: |
           python - <<'PY'
           import json
@@ -43,6 +50,7 @@ jobs:
           print('::notice title=Selected API model::' + model)
           PY
       - name: 原始示例的一次普通对话
+        if: github.event_name == 'workflow_dispatch' && inputs.chat_call == true
         run: python scripts/check_connection.py --mode chat
       - name: 显示普通 API 验证结果
         if: always()
@@ -79,7 +87,11 @@ jobs:
               finish = value.get('finish_reason')
               finish = finish if isinstance(finish, str) and finish in {'stop', 'length', 'content_filter', 'tool_calls', 'function_call'} else 'unavailable'
               received = 'true' if value.get('model_reply_received') is True else 'false'
+              catalog_received = ('true' if type(value.get('http_status')) is int
+                                  and 200 <= value['http_status'] < 300
+                                  and isinstance(value.get('suggested_model'), str) else 'false')
               print('::notice title=API diagnostic::http_status=' + status + '; category=' + category
+                    + '; model_directory_received=' + catalog_received
                     + '; model_reply_received=' + received + '; finish_reason=' + finish)
               hint = value.get('provider_error_hint')
               if isinstance(hint, str) and hint:
