@@ -26,20 +26,33 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
         with:
           python-version: '3.12'
-      - name: 单领域请求诊断（日报参数，仅调用一次）
+      - name: 确认普通模型响应，再做一次短检索
         run: |
           python - <<'PY'
           from datetime import datetime, timezone
+          import json
           from pathlib import Path
           from scripts import check_connection
           from x_digest.app import load_settings
-          from x_digest.provider import _payload
+          from x_digest.provider import _retrieval_payload
 
+          # Check whether latency affects ordinary inference as well as search.
+          # The model reply itself is never printed by this helper.
+          check_connection.REQUEST_TIMEOUT = 45
+          chat_code = check_connection.main(['--mode', 'chat'])
+          chat = json.loads(Path('.local/connection-report.json').read_text())
+          status = chat.get('http_status')
+          status = status if type(status) is int and 100 <= status <= 599 else 'unavailable'
+          received = chat.get('model_reply_received') is True
+          print('::notice title=Ordinary model readiness::http_status=' + str(status)
+                + '; model_reply_received=' + str(received).lower())
+          if chat_code:
+              raise SystemExit(chat_code)
           settings = dict(load_settings(Path('settings.json')), categories=['AI'],
                           target_count=2, max_tool_calls=1, max_output_tokens=3000)
-          # Use the actual production request to isolate the failure, with the
-          # diagnostic helper's bounded and redacted HTTP error reporting.
-          check_connection._responses_payload = lambda model: _payload(
+          # Retrieve sources only. Official post reading and Chinese editing
+          # happen after retrieval in the production app.
+          check_connection._responses_payload = lambda model: _retrieval_payload(
               model, settings, set(), datetime.now(timezone.utc))
           raise SystemExit(check_connection.main(['--mode', 'responses-search']))
           PY

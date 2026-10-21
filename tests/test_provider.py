@@ -163,6 +163,83 @@ class ProviderTests(unittest.TestCase):
         self.assertEqual(json.loads(opener.open.call_args.args[0].data)["max_output_tokens"], 3000)
         self.assertEqual(opener.open.call_args.kwargs["timeout"], 120)
 
+    def test_retrieval_only_accepts_non_json_body_but_uses_only_metadata_sources(self):
+        data = response_data()
+        data["output"][1]["content"][0]["text"] = "找到几个原帖，包括 " + INVENTED_URL
+        result, _ = self.call(data=data, retrieval_only=True)
+        self.assertEqual(result.posts, [])
+        self.assertEqual(result.cited_urls, [REAL_URL])
+        self.assertNotIn(INVENTED_URL, result.cited_urls)
+        self.assertEqual(result.usage, {"total_tokens": 123})
+        # A source-only response does not need a generated message at all.
+        data["output"].pop()
+        result, _ = self.call(data=data, retrieval_only=True)
+        self.assertEqual(result.posts, [])
+        self.assertEqual(result.cited_urls, [REAL_URL])
+
+    def test_retrieval_only_cannot_promote_generated_links_to_sources(self):
+        data = response_data()
+        data["output"][0]["action"]["sources"] = []
+        data["output"][1]["content"][0]["text"] = "真实原帖 " + REAL_URL
+        with self.assertRaisesRegex(provider.ProviderError, "独立"):
+            self.call(data=data, retrieval_only=True)
+
+    def test_retrieval_only_still_requires_completed_response_and_search_tool(self):
+        for alteration in ("remove_search", "search_in_progress", "response_incomplete"):
+            data = response_data()
+            data["output"][1]["content"][0]["annotations"] = [{"type": "url_citation", "url": REAL_URL}]
+            if alteration == "remove_search":
+                data["output"].pop(0)
+            elif alteration == "search_in_progress":
+                data["output"][0]["status"] = "in_progress"
+            else:
+                data["status"] = "incomplete"
+            with self.subTest(alteration=alteration), self.assertRaises(provider.ProviderError):
+                self.call(data=data, retrieval_only=True)
+
+    def test_retrieval_request_is_short_without_schema_and_has_bounded_output(self):
+        settings = dict(SETTINGS, categories=["AI"], editorial_preferences=[SECRET * 400],
+                        max_output_tokens=10000, max_tool_calls=6)
+        seen_ids = {str(1000000000000000000 + n) for n in range(1000)}
+        _, opener = self.call(settings=settings, seen_ids=seen_ids, retrieval_only=True)
+        payload = json.loads(opener.open.call_args.args[0].data)
+        self.assertNotIn("text", payload)
+        self.assertIsInstance(payload["input"], str)
+        self.assertLess(len(payload["input"]), 2500)
+        self.assertNotIn(SECRET, payload["input"])
+        self.assertIn("当前UTC时间：2026-10-20T00:00:00+00:00", payload["input"])
+        self.assertIn("after:2026-10-13 before:2026-10-21", payload["input"])
+        self.assertIn("只简短列原帖URL", payload["input"])
+        self.assertEqual(payload["max_tool_calls"], 1)
+        self.assertEqual(payload["max_output_tokens"], 1500)
+        self.assertEqual(payload["tool_choice"], "required")
+        self.assertEqual(payload["include"], ["web_search_call.action.sources"])
+        self.assertEqual(payload["tools"], [{"type": "web_search", "filters": {
+            "allowed_domains": ["x.com", "twitter.com"]}}])
+        self.assertIn(str(1000000000000000000 + 999), payload["input"])
+        self.assertNotIn(str(1000000000000000000), payload["input"])
+        smaller = provider._retrieval_payload("configured", dict(SETTINGS, max_output_tokens=500), set(), NOW)
+        self.assertEqual(smaller["max_output_tokens"], 500)
+
+    def test_retrieval_prompt_keeps_classic_and_student_time_limits_distinct(self):
+        settings = dict(SETTINGS, categories=["投资", "读书", "学生羊毛"],
+                        classic_categories=["投资", "读书"], max_classic_count=3)
+        prompt = provider._retrieval_payload("configured", settings, set(), NOW)["input"]
+        self.assertIn('经典例外：["投资", "读书"]', prompt)
+        self.assertIn("旧行情、旧财报时点判断和过期消息不算经典", prompt)
+        self.assertIn("旧帖不能算近期结果", prompt)
+        self.assertIn("学生羊毛仅限72小时且仍有效", prompt)
+        self.assertIn("after:2026-10-17 before:2026-10-21", prompt)
+        ai_prompt = provider._retrieval_payload("configured", dict(settings, categories=["AI"]), set(), NOW)["input"]
+        self.assertNotIn("经典例外", ai_prompt)
+
+    def test_retrieval_flag_is_validated_before_network(self):
+        with patch.object(provider.request, "build_opener") as build:
+            with self.assertRaises(provider.ProviderError):
+                provider.search(base_url="https://relay.example/v1", api_key=SECRET, model="configured",
+                                settings=SETTINGS, seen_ids=set(), now=NOW, retrieval_only=1)
+            build.assert_not_called()
+
     def test_recent_queries_have_dynamic_dates_and_bilingual_topic_terms(self):
         categories = ["科技", "AI", "股市", "投资", "读书", "学生羊毛"]
         settings = dict(SETTINGS, categories=categories, classic_categories=["股市", "投资", "读书"],
@@ -220,7 +297,7 @@ class CategorySearchTests(unittest.TestCase):
                                            model="configured-search-model", settings=settings or SETTINGS,
                                            seen_ids={"789"}, now=NOW)
 
-    def test_each_category_gets_one_strict_bounded_request_with_two_workers(self):
+    def test_each_category_gets_one_source_only_bounded_request_with_two_workers(self):
         categories = ["科技", "AI", "股市", "投资", "读书", "学生羊毛"]
         settings = dict(SETTINGS, categories=categories, max_tool_calls=6)
         original = json.loads(json.dumps(settings))
@@ -233,9 +310,8 @@ class CategorySearchTests(unittest.TestCase):
         def respond(req, *, timeout):
             nonlocal active, peak
             payload = json.loads(req.data)
-            enum = payload["text"]["format"]["schema"]["properties"]["posts"]["items"]["properties"]["category"]["enum"]
-            self.assertEqual(len(enum), 1)
-            category = enum[0]
+            category = next(category for category in categories
+                            if "分类：" + json.dumps([category], ensure_ascii=False) + "\n" in payload["input"])
             with lock:
                 active += 1
                 peak = max(peak, active)
@@ -246,9 +322,7 @@ class CategorySearchTests(unittest.TestCase):
                 url = f"https://x.com/author{index}/status/{12345 + index}"
                 data = response_data()
                 data["output"][0]["action"]["sources"] = [{"type": "url", "url": url}]
-                data["output"][1]["content"][0]["text"] = json.dumps({"posts": [{
-                    "url": url, "category": category, "summary": "已引用的摘要", "reason": "测试理由",
-                }]})
+                data["output"][1]["content"][0]["text"] = "仅找原帖，不做编辑 " + url
                 data["usage"] = {"input_tokens": 1, "output_tokens": 2, "total_tokens": 3,
                                  "provider_detail": SECRET}
                 return io.BytesIO(json.dumps(data).encode())
@@ -263,16 +337,18 @@ class CategorySearchTests(unittest.TestCase):
         self.assertEqual(peak, 2)
         self.assertEqual(opener.open.call_count, len(categories))
         self.assertCountEqual([category for category, _, _ in calls], categories)
-        self.assertEqual([post["category"] for post in result.posts], categories)
+        self.assertEqual(result.posts, [])
+        self.assertEqual(result.cited_urls, [f"https://x.com/author{index}/status/{12345 + index}"
+                                             for index in range(len(categories))])
         self.assertEqual(len(result.cited_urls), len(categories))
         self.assertEqual(result.usage, {"input_tokens": 6, "output_tokens": 12, "total_tokens": 18})
         self.assertEqual(settings, original)
         for _, payload, timeout in calls:
             self.assertEqual(timeout, 120)
             self.assertEqual(payload["max_tool_calls"], 1)
-            self.assertEqual(payload["max_output_tokens"], 3000)
-            self.assertIn("目标最终 2 条", payload["input"][1]["content"])
-            self.assertTrue(payload["text"]["format"]["strict"])
+            self.assertEqual(payload["max_output_tokens"], 1500)
+            self.assertNotIn("text", payload)
+            self.assertIsInstance(payload["input"], str)
             self.assertEqual(payload["include"], ["web_search_call.action.sources"])
 
     def test_partial_failure_is_skipped_without_retry_or_error_text(self):
@@ -362,6 +438,8 @@ class CategorySearchTests(unittest.TestCase):
     def test_target_is_capped_at_original_target_and_usage_is_fixed_integer_totals(self):
         def search(**kwargs):
             self.assertEqual(kwargs["settings"]["target_count"], 1)
+            self.assertTrue(kwargs["retrieval_only"])
+            self.assertEqual(kwargs["settings"]["max_output_tokens"], 1500)
             if kwargs["settings"]["categories"] == ["AI"]:
                 return provider.SearchResult([], [REAL_URL], {"input_tokens": True, "output_tokens": -1,
                                                                "total_tokens": 5, "extra": SECRET})

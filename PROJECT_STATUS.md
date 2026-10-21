@@ -15,7 +15,7 @@
 
 - Python标准库脚本、六领域搜索、中文编辑、来源/作者/日期检查、HTML邮件、45天去重与SMTP投递后记账。
 - 经典必须经过官方oEmbed正文核实和独立编辑；原搜索摘要或模型自报日期不能获得经典豁免。
-- 当前本地完整测试162项通过。没有真正选出合格帖子时停止，不发空日报。
+- 当前本地完整测试168项通过。没有真正选出合格帖子时停止，不发空日报。
 - API根地址 `https://n.tokeness.dev/v1`；实际目录曾列出并已测试 `gpt-6-luna`。普通调用曾[成功](https://github.com/newwestcity/-/actions/runs/39462398796)，标准Responses搜索也曾[成功](https://github.com/newwestcity/-/actions/runs/39464437212)。
 - 官方oEmbed[读取3条公开帖成功](https://github.com/newwestcity/-/actions/runs/39528636251)，只证明正文读取能力。
 - QQ SMTP[连接测试成功](https://github.com/newwestcity/-/actions/runs/39528686309)，用户确认收件。
@@ -26,13 +26,15 @@
 1. 早期完整预览的15个引用全部超过7天，故没有入选；之后已按用户偏好实现经典最多3条。
 2. 加入经典后的[完整预览 #5](https://github.com/newwestcity/-/actions/runs/39529399248)在请求阶段失败，没有产生日报。
 3. 随后的[单领域诊断 #4](https://github.com/newwestcity/-/actions/runs/39529662246)返回 **HTTP 401**。这证明当次请求认证被拒绝，具体原因未取得；不能直接认定API余额不足。Codex自身额度中断与该接口错误应分别看待。
-4. 恢复后已推送 `bedbb84`：`check-chat.yml` 默认仅GET模型目录，不调用付费模型、不发邮件。[当前目录认证检查 #7](https://github.com/newwestcity/-/actions/runs/39575507125)仍返回 **HTTP 401**、`model_directory_received=false`，因此问题不限于搜索路径；具体认证原因仍未给出。
-5. 完整内容预览和真实日报尚未成功；定时发送未开启。`daily-digest.yml` 只有仓库变量 `DIGEST_ENABLED=true` 才在08:00运行。
+4. 恢复后的[目录认证检查 #7](https://github.com/newwestcity/-/actions/runs/39575507125)也曾返回HTTP401。用户随后安全更新了 `DIGEST_API_KEY`，新的[目录检查 #8](https://github.com/newwestcity/-/actions/runs/39576484544)已返回 **HTTP 200**、`model_directory_received=true`，实际可用型号仍为 `gpt-6-luna`；此检查未调用模型或SMTP。
+5. 凭据更新后的[单领域生产搜索 #5](https://github.com/newwestcity/-/actions/runs/39576727332)等了240秒后超时，没有HTTP响应或已完成搜索证据。这次不是401，不能再把它当认证失败。
+6. 检索阶段正改为只取独立工具引用、不生成摘要、不要求JSON schema、最多1500输出token；之后统一读取官方正文并编辑中文。下一次探针先用45秒上限测试普通一句话回复，通过后只做一次短检索，用来区分模型服务与搜索延迟。该调整仍待真实验证。
+7. 完整内容预览和真实日报尚未成功；定时发送未开启。`daily-digest.yml` 只有仓库变量 `DIGEST_ENABLED=true` 才在08:00运行。
 
 ## 下一步
 
-1. 已请用户在Tokeness确认有效密钥后，在GitHub Secret `DIGEST_API_KEY` 安全更新；值只填密钥本身，不带Bearer、引号或curl。等待“已更新”后，再做一次只GET目录的认证检查。不要在聊天索取密钥，不要重填已成功的SMTP配置。
-2. 如果模型目录成功，应诊断Responses路径/模型权限，不能直接要求换密钥。已有单领域请求诊断只调用一次，并输出脱敏错误；不要直接反复六领域检索。
+1. 新密钥目录认证已经恢复，不要再次索取或重填密钥/SMTP配置。
+2. 先读单领域搜索结果，确认Responses路径可用后再进行完整预览。已有单领域诊断只调用一次，并输出脱敏错误；不要直接反复六领域检索。
 3. 认证可用后运行一次完整预览，检查近期/经典数量、分类、真实来源及日期。经典最多3条，不能放宽AI/科技/优惠时效来制造成功。
 4. 内容预览通过后完成真实日报验证与每日计划启用，明确首次发送时间和不足10条的实际行为。
 
