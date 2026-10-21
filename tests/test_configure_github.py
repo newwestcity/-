@@ -94,18 +94,21 @@ class ConfigureGitHubTests(unittest.TestCase):
         run.side_effect = self.success
         self.run_apply()
         writes = [call.args[0] for call in run.call_args_list if call.args[0][1:3] == ["variable", "set"]]
-        self.assertEqual({command[3] for command in writes}, {"SMTP_USERNAME", "MAIL_TO", "DIGEST_ENABLED"})
+        self.assertEqual({command[3] for command in writes}, {"SMTP_USERNAME", "MAIL_TO"})
 
     @patch("scripts.configure_github.subprocess.run")
-    def test_existing_enabled_switch_is_preserved(self, run):
-        def enabled(command, **kwargs):
-            if "repos/newwestcity/-/actions/variables" in command:
-                return subprocess.CompletedProcess(command, 0, "true\n", "")
-            return self.success(command, **kwargs)
-        run.side_effect = enabled
-        self.run_apply()
-        writes = [call.args[0] for call in run.call_args_list if call.args[0][1:3] == ["variable", "set"]]
-        self.assertNotIn("DIGEST_ENABLED", {command[3] for command in writes})
+    def test_schedule_switch_is_preserved_when_enabled_disabled_or_absent(self, run):
+        for remote_value in ("true\n", "false\n", ""):
+            with self.subTest(remote_value=remote_value):
+                def configured(command, **kwargs):
+                    if "repos/newwestcity/-/actions/variables" in command:
+                        return subprocess.CompletedProcess(command, 0, remote_value, "")
+                    return self.success(command, **kwargs)
+                run.reset_mock()
+                run.side_effect = configured
+                self.run_apply()
+                writes = [call.args[0] for call in run.call_args_list if call.args[0][1:3] == ["variable", "set"]]
+                self.assertNotIn("DIGEST_ENABLED", {command[3] for command in writes})
 
     @patch("scripts.configure_github.subprocess.run")
     def test_nonsecret_api_configuration_can_come_from_environment(self, run):

@@ -131,7 +131,7 @@ def configure(
     for name, value in (("DIGEST_API_BASE", api_base), ("DIGEST_MODEL", model)):
         if value is None:
             print(f"{name} 未提供，将保留远端现有值")
-    print("DIGEST_ENABLED：保留已启用状态，否则设为 false")
+    print("DIGEST_ENABLED：保留远端原值；未设置时不创建，沿用工作流默认行为")
     print("密钥只接受隐藏输入；不会从云环境复制任何密钥或占位符。")
     if not apply:
         print("预览完成：未联网、未写入。使用 --apply 才执行配置。")
@@ -148,11 +148,10 @@ def configure(
         ["api", "--paginate", f"repos/{repo}/actions/secrets", "--jq", ".secrets[].name"],
         operation="密钥名称读取预检",
     ).splitlines())
-    preserve_enabled = any(line.strip().lower() == "true" for line in enabled_output.splitlines())
-    if preserve_enabled:
-        print("远端定时开关已启用，将保留该值。")
+    if enabled_output.strip():
+        print("远端定时开关已有配置，将保留原值。")
     else:
-        variables["DIGEST_ENABLED"] = "false"
+        print("未创建定时开关变量，沿用工作流默认行为。")
 
     secrets_to_set = {}
     if prompt_secrets:
@@ -173,7 +172,7 @@ def configure(
         print("仍缺少安全配置：" + ", ".join(missing))
     else:
         print("两项密钥名称均已配置；实际接口和投递仍需验证。")
-    print("GitHub 配置步骤完成；本操作未运行搜索、未发信，也未启用新的日程。")
+    print("GitHub 配置步骤完成；本操作未运行搜索、未发信，也未修改定时开关。")
     return 0
 
 

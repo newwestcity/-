@@ -3,8 +3,7 @@ name: 每日 X 精选
 on:
   push:
   schedule:
-    - cron: '0 8 * * *'
-      timezone: Asia/Shanghai
+    - cron: '0 0 * * *' # UTC 00:00 = 北京时间 08:00
   workflow_dispatch:
     inputs:
       send_mail:
@@ -23,6 +22,8 @@ concurrency:
 jobs:
   tests:
     runs-on: ubuntu-latest
+    outputs:
+      daily_enabled: ${{ steps.schedule.outputs.daily_enabled }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -30,6 +31,23 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
         with:
           python-version: '3.12'
+      - name: 检查每日计划开关
+        id: schedule
+        env:
+          DAILY_OVERRIDE: ${{ vars.DIGEST_ENABLED }}
+        run: |
+          python - <<'PY'
+          import os
+          value = os.environ.get('DAILY_OVERRIDE', '').strip().lower()
+          if value not in {'', 'true', 'false'}:
+              print('::error::Invalid DIGEST_ENABLED value; use true or false.')
+              raise SystemExit(2)
+          enabled = value != 'false'
+          flag = str(enabled).lower()
+          with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as stream:
+              stream.write('daily_enabled=' + flag + '\n')
+          print('::notice title=Daily schedule::enabled=' + flag + '; time=08:00 Asia/Shanghai')
+          PY
       - run: python -m unittest discover -s tests -v
 
   digest:
@@ -37,7 +55,7 @@ jobs:
     if: >-
       github.ref_name == github.event.repository.default_branch &&
       (github.event_name == 'workflow_dispatch' ||
-      (github.event_name == 'schedule' && vars.DIGEST_ENABLED == 'true'))
+      (github.event_name == 'schedule' && needs.tests.outputs.daily_enabled == 'true'))
     runs-on: ubuntu-latest
     timeout-minutes: 15
     env:

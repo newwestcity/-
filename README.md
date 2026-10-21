@@ -1,10 +1,10 @@
 # 每日 X 阅读精选
 
-每天北京时间 08:00，目标 10 条；科技、AI、股市、投资、读书、学生羊毛尽量均衡，中英文原帖统一用中文说明。投资侧重价值投资和原理学习，羊毛需写清资格、地区和有效期，内容不足时宁缺毋滥。用户允许价值投资、投资方法和读书每期最多3条经典旧帖，须核实正文并标明原帖日期，不能冒充近期内容。筛选偏好及账号屏蔽名单见 [settings.json](settings.json)。
+每天北京时间 08:00，目标 10 条；科技、AI、股市、投资、读书、学生羊毛尽量均衡。邮件每条只放原帖链接、短中文介绍和一句推荐理由，不转载原帖全文。投资侧重价值投资和原理学习，羊毛需写清资格、地区和有效期，内容不足时宁缺毋滥。用户允许价值投资、投资方法和读书每期最多3条经典旧帖，须核实正文并标明原帖日期，不能冒充近期内容。筛选偏好及账号屏蔽名单见 [settings.json](settings.json)。
 
 ## 当前进度
 
-脚本、邮件模板、发送记录和 GitHub Actions 工作流已写入。Tokeness 的普通 GPT 调用、标准 Responses `web_search`、官方 oEmbed 正文读取曾在 GitHub 执行机器上实测成功；QQ 连接测试已投递且用户确认收到。用户更新密钥后，目录认证已恢复；最近搜索请求超时，正在验证更短的来源检索。完整每日投递尚未验证，定时发送保持关闭。恢复工作先读 [项目进度记录](PROJECT_STATUS.md)。
+脚本、邮件模板、发送记录和 GitHub Actions 工作流已写入。QQ 连接测试已投递且用户确认收到。更新密钥并缩短检索请求后，普通模型、搜索响应与完整预览已恢复；最新预览有投资经典1条、近期0条，尚不满足十条或六领域近期覆盖。[首期内容示范](https://github.com/newwestcity/-/actions/runs/39580533147)已被QQ服务器接受，发送历史缓存也已保存。每日计划默认开启，可显式停用。恢复工作先读 [项目进度记录](PROJECT_STATUS.md)。
 
 已核对的 API 根地址是 `https://n.tokeness.dev/v1`，模型是该密钥目录实际列出的 `gpt-6-luna`。普通对话走 `/chat/completions`，日报搜索走 `/responses`；单次接口检查通过不等于完整日报已投递。
 
@@ -18,7 +18,7 @@
 
 X 搜索已[实测成功](https://github.com/newwestcity/-/actions/runs/39464437212)：HTTP 200，完整搜索记录，2 条有效 X 原帖来源。[完整日报预览](https://github.com/newwestcity/-/actions/workflows/check-digest-preview.yml)进一步运行实际的六领域搜索、筛选、来源/时效/去重校验与 HTML 渲染，不连接 SMTP；HTML 可从工作流附件下载。
 
-[早期完整预览](https://github.com/newwestcity/-/actions/runs/39469686167)取得了15条原帖来源，但全部超过7天窗口。加入经典规则后的[最新完整预览](https://github.com/newwestcity/-/actions/runs/39529399248)在请求阶段失败；随后的[单领域诊断](https://github.com/newwestcity/-/actions/runs/39529662246)返回 HTTP 401。恢复后的[模型目录检查](https://github.com/newwestcity/-/actions/runs/39575507125)也返回401，说明认证问题不限于搜索路径，具体密钥或账户原因仍需确认。检索协议曾可用不代表现在能稳定找到近期优质帖子，不能据此开启定时发送。[公开正文读取检查](https://github.com/newwestcity/-/actions/workflows/check-post-access.yml)已核实3条已有公开链接的官方 oEmbed 正文；它不调用模型、不发邮件，也不证明这些旧帖符合推荐要求。
+[早期完整预览](https://github.com/newwestcity/-/actions/runs/39469686167)取得了15条过期引用；后续又遇到401与搜索超时。用户更新密钥后[目录认证恢复](https://github.com/newwestcity/-/actions/runs/39576484544)。拆分检索与编辑后的[最新完整预览](https://github.com/newwestcity/-/actions/runs/39578665264)已成功：投资经典1条、近期0条，每条官方核实元数据均通过。检索响应可用仍不保证每天找到十条优质内容或覆盖所有领域。[公开正文读取检查](https://github.com/newwestcity/-/actions/workflows/check-post-access.yml)已核实3条已有公开链接的官方 oEmbed 正文；它不调用模型或发邮件。
 
 此步骤在 GitHub 自己的执行机器上运行，与 Codex 开发环境的保存、发布分开。当前 Codex 执行机器仍无法连到 `n.tokeness.dev`，请求被网络代理拒绝；这不能判断 Tokeness 本身或密钥是否正常。
 
@@ -64,7 +64,7 @@ python3 -m x_digest --fetch --send
 
 ## GitHub 定时运行
 
-[工作流](.github/workflows/daily-digest.yml)包含北京时间 08:00 的每日计划和手动运行入口。定时发信默认关闭，需要先完成下述服务配置和验证。
+[工作流](.github/workflows/daily-digest.yml)包含北京时间 08:00 的每日计划和手动运行入口。当前实现已完成内容示范投递，每日计划默认开启；仓库Variable `DIGEST_ENABLED=false`可停用，`true`或未设置为开启。每次测试任务仅公开生效开关的布尔值，不输出变量原文。
 
 准备接入时，在 GitHub 仓库的 **Settings → Secrets and variables → Actions** 配置：
 
@@ -81,9 +81,9 @@ python3 scripts/configure_github.py
 python3 scripts/configure_github.py --apply
 ```
 
-第一条仅离线预览，第二条在只读预检成功后代填邮箱等字段；已提供且已核实的 `DIGEST_API_BASE`、`DIGEST_MODEL` 会一并填写，未提供时保留远端值。已有启用状态会保留，新配置的定时开关设为关闭。在受信的本地终端增加 `--prompt-secrets` 可隐藏输入两项密钥并经 stdin 提交；无隐藏输入能力时停止。助手不会将云环境的代理密钥或占位符复制到 GitHub。
+第一条仅离线预览，第二条在只读预检成功后代填邮箱等字段；已提供且已核实的 `DIGEST_API_BASE`、`DIGEST_MODEL` 会一并填写，未提供时保留远端值。助手不创建或改写定时开关：已有设置保留，未设置时沿用工作流默认开启。在受信的本地终端增加 `--prompt-secrets` 可隐藏输入两项密钥并经 stdin 提交；无隐藏输入能力时停止。助手不会将云环境的代理密钥或占位符复制到 GitHub。
 
-将代码放入仓库默认分支，手动运行该分支的工作流；先不勾选 `send_mail` 检查生成的 `digest-preview` HTML 附件，再勾选测试发信。真实收信确认后，将仓库 Variable `DIGEST_ENABLED` 设为 `true`，每日计划才会运行搜索与发信。推送触发的任务仅运行测试。日报任务限制在默认分支，保证预览与发信使用同一份缓存历史。
+将代码放入仓库默认分支，手动运行该分支的工作流；不勾选 `send_mail` 仅生成 `digest-preview` HTML，勾选后真实发信。默认开启时每日计划运行搜索与发信；显式停用后需要将 `DIGEST_ENABLED` 改为 `true`或删除该变量才会恢复。推送触发的每日工作流仅运行测试。日报任务限制在默认分支，保证预览与发信使用同一份缓存历史。
 
 GitHub 的定时任务可能排队延迟，08:00 是触发目标，不保证准时送达。公开仓库长期无活动时，GitHub 也可能停用计划任务；私有仓库须留意其 Actions 配额和服务商 API 用量。
 
