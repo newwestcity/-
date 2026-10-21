@@ -1,9 +1,12 @@
 name: 阅读与项目完整预览
 on:
-  push:
-    branches: [main]
-    paths: ['.github/workflows/check-digest-preview.yml']
   workflow_dispatch:
+    inputs:
+      edition:
+        description: 选择预览版次（实际检索与编辑可能计费，不发邮件）
+        type: choice
+        options: [daily, weekly, both]
+        default: daily
 permissions:
   contents: read
 jobs:
@@ -12,7 +15,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        edition: ${{ github.event_name == 'push' && fromJSON('["weekly"]') || fromJSON('["daily","weekly"]') }}
+        edition: ${{ inputs.edition == 'weekly' && fromJSON('["weekly"]') || inputs.edition == 'daily' && fromJSON('["daily"]') || fromJSON('["daily","weekly"]') }}
     runs-on: ubuntu-latest
     timeout-minutes: 25
     env:

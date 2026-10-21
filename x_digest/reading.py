@@ -32,7 +32,7 @@ def _credentials():
 
 def _editor_code(error):
     code = getattr(error, "code", "invalid_output")
-    return code if code in editorial.EDITORIAL_ERROR_CODES else "invalid_output"
+    return code if isinstance(code, str) and code in editorial.EDITORIAL_ERROR_CODES else "invalid_output"
 
 
 def _published(item):
@@ -158,10 +158,21 @@ def _daily(settings, seen, now):
             eligible.sort(key=lambda url: next(row["status"] != "recent" for row in audit if row["url"] == url))
             verified_x = fetch_verified_posts(eligible, now=now, limit=20) if eligible else []
             diagnostics["x_verified"] = len(verified_x)
-        except ProviderError:
+        except ProviderError as error:
             verified_x = []
             source_status["X"] = "unavailable"
             diagnostics["x_search_failed"] = 1
+            # search_by_category emits only fixed aggregate labels here. Keep
+            # those counts for diagnosis without copying an exception message.
+            try:
+                failures = json.loads(str(error).partition("诊断=")[2])
+                allowed = {"no_sources", "not_json", "incomplete", "no_tool", "invalid_posts", "network", "other",
+                           "HTTP400", "HTTP401", "HTTP403", "HTTP404", "HTTP429"}
+                if (isinstance(failures, dict) and set(failures) <= allowed
+                        and all(type(n) is int and 0 <= n <= len(settings["categories"]) for n in failures.values())):
+                    diagnostics["x_search_failures"] = failures
+            except (ValueError, TypeError):
+                pass
         snow = snow_future.result()
         diagnostics["xueqiu_discovery"] = snow.diagnostics
         fetched = fetch_articles(snow.urls, now=now) if snow.urls else None

@@ -23,6 +23,8 @@ def main():
     except (ConfigurationError, ProviderError):
         result = {"status": "no_preview", "edition": edition}
     notice("Reading preview result", {**result, "mail_sent": False})
+    if result["status"] == "already_sent":
+        return 0
     path = Path(".local/reading-audit.json")
     if path.exists():
         audit = json.loads(path.read_text(encoding="utf-8"))

@@ -314,6 +314,7 @@ def build_reading_message(
         meta = []
         extra = []
         if edition == "weekly":
+            meta.append("仓库：" + url.removeprefix("https://github.com/"))
             stars = item.get("stars")
             if type(stars) is not int or stars < 0:
                 raise ValueError("项目星标数无效")
