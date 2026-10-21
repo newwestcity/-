@@ -32,6 +32,7 @@ jobs:
           python - <<'PY'
           from collections import Counter
           from contextlib import redirect_stderr, redirect_stdout
+          from datetime import datetime, timedelta, timezone
           import html
           from io import StringIO
           import json
@@ -70,7 +71,16 @@ jobs:
                   category = post.get('category')
                   if not isinstance(category, str) or category not in settings['categories']:
                       raise ValueError('Invalid preview category')
-                  url, _, _ = canonical_post_url(post.get('url'))
+                  url, post_id, _ = canonical_post_url(post.get('url'))
+                  published = datetime.fromisoformat(post['published_at'])
+                  verified = datetime.fromisoformat(post['verified_at'])
+                  expected = datetime(2010, 11, 4, 1, 42, 54, 657000, tzinfo=timezone.utc) + timedelta(milliseconds=int(post_id) >> 22)
+                  kind = post.get('reading_kind')
+                  if (published.utcoffset() is None or verified.utcoffset() is None
+                          or published != expected or post.get('id') != post_id
+                          or kind not in {'recent', 'classic'}
+                          or (kind == 'classic' and category not in settings.get('classic_categories', []))):
+                      raise ValueError('Invalid verified post metadata')
                   public_posts.append((category, url))
           except (OSError, ValueError, KeyError, TypeError):
               print('::error title=Digest preview failed::Generated preview could not be validated.')
@@ -78,9 +88,13 @@ jobs:
 
           counts = Counter(category for category, _ in public_posts)
           classic_count = sum(post.get('reading_kind') == 'classic' for post in posts)
+          if classic_count > settings.get('max_classic_count', 0):
+              print('::error::Classic reading count exceeded the configured limit.')
+              raise SystemExit(1)
           summary = {'post_count': len(public_posts),
                      'recent_count': len(posts) - classic_count,
                      'classic_count': classic_count,
+                     'official_post_metadata_valid': True,
                      'category_counts': {category: counts[category] for category in settings['categories']}}
           print('::notice title=Digest preview::' + escape_annotation(json.dumps(summary, ensure_ascii=False)))
           for category, url in public_posts:
