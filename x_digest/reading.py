@@ -30,6 +30,11 @@ def _credentials():
             "model": os.environ["DIGEST_MODEL"]}
 
 
+def _editor_code(error):
+    code = getattr(error, "code", "invalid_output")
+    return code if code in editorial.EDITORIAL_ERROR_CODES else "invalid_output"
+
+
 def _published(item):
     if not item.get("published_at"):
         return None
@@ -177,9 +182,10 @@ def _daily(settings, seen, now):
                     allowed_categories=(settings["classic_categories"] if source == "X" and classic else categories),
                     target_count=min(3, target) if classic else target, classic=classic))
                 editor_succeeded = True
-            except ProviderError:
+            except ProviderError as error:
                 editor_failed = True
                 diagnostics[("x" if source == "X" else "xueqiu") + "_editor_failed"] = 1
+                diagnostics[("x" if source == "X" else "xueqiu") + "_editor_error"] = _editor_code(error)
         if editor_failed and not editor_succeeded:
             source_status[source] = "unavailable"
         elif verified and source_status[source] != "unavailable":
@@ -199,9 +205,10 @@ def _weekly(settings, seen, now):
     editor_failed = False
     try:
         selected = editorial.curate_projects(**_credentials(), items=projects, target_count=10, now=now) if projects else []
-    except ProviderError:
+    except ProviderError as error:
         selected, editor_failed = [], True
         fetched.diagnostics["editor_failed"] = 1
+        fetched.diagnostics["editor_error"] = _editor_code(error)
     # Limit a publisher to two recommendations; identity is collector-owned.
     owners, chosen = Counter(), []
     for project in sorted(selected, key=lambda p: -p["score_total"]):
