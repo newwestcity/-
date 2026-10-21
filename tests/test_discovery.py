@@ -60,6 +60,48 @@ class DiscoveryTests(unittest.TestCase):
         self.assertEqual(result.diagnostics["invalid_url"], 2)
         self.assertEqual(opener.open.call_count, 2)
 
+    def test_titles_only_come_from_source_metadata_and_annotations(self):
+        first = response([REAL], text='标题：模型编的投资介绍 ' + FAKE)
+        first["output"][0]["action"]["sources"][0]["title"] = "  &lt;b&gt;财报分析&lt;/b&gt;\n现金流\x00 "
+        second = response([], [{"type": "url_citation", "url": "https://www.xueqiu.com/123456/654321",
+                                "title": "价值投资" * 100}])
+        result, _ = self.call([first, second])
+        by_url = {value["url"]: value for value in result.candidates}
+        self.assertEqual(by_url[REAL]["title"], "财报分析 现金流")
+        self.assertEqual(len(by_url["https://xueqiu.com/123456/654321"]["title"]), 300)
+        for value in result.candidates:
+            self.assertEqual(value["source"], "雪球")
+            self.assertEqual(value["discovery_basis"], "search_metadata")
+            self.assertEqual(value["discovered_at"], NOW.isoformat())
+            self.assertNotIn("published_at", value)
+            self.assertNotIn("author", value)
+            self.assertNotIn("summary", value)
+            self.assertNotIn("scores", value)
+        self.assertEqual(by_url[REAL]["id"], "xueqiu:987654")
+
+    def test_empty_or_generated_title_never_creates_a_metadata_candidate(self):
+        result, _ = self.call([response([REAL], text="财报深度分析"),
+                              response([], [{"type": "text", "url": REAL, "title": "假的元数据标题"}])])
+        self.assertEqual(result.urls, [REAL])
+        self.assertEqual(result.candidates, [])
+        # Existing callers that construct the result with two arguments work.
+        self.assertEqual(discovery.XueqiuDiscoveryResult([], {}).candidates, [])
+
+    def test_duplicate_citation_can_supply_title_only_for_same_canonical_identity(self):
+        data = response([REAL], annotations=[{"type": "url_citation", "url": REAL + "?x=1",
+                                             "title": "长期投资与安全边际"}])
+        result, _ = self.call([data, response([REAL])])
+        self.assertEqual(len(result.candidates), 1)
+        self.assertEqual(result.candidates[0]["title"], "长期投资与安全边际")
+        self.assertEqual(result.candidates[0]["url"], REAL)
+
+    def test_uncompleted_tools_cannot_supply_title_fallback(self):
+        data = response([REAL], annotations=[{"type": "url_citation", "url": REAL, "title": "投资原理"}])
+        data["output"][0]["status"] = "in_progress"
+        result, _ = self.call([data, data])
+        self.assertEqual(result.candidates, [])
+        self.assertEqual(result.urls, [])
+
     def test_unfinished_or_missing_tool_does_not_accept_annotations(self):
         for alteration in ("missing_tool", "unfinished_tool", "unfinished_response"):
             data = response([], [{"type": "url_citation", "url": REAL}])

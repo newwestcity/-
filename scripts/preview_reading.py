@@ -35,7 +35,7 @@ def main():
     counts = Counter(item["source"] for item in data["items"])
     notice("Reading verified sources", dict(counts))
     for item in data["items"][:7]:
-        public = {key: item[key] for key in ("source", "url", "title", "summary", "reason", "score_total")}
+        public = {key: item[key] for key in ("source", "url", "title", "summary", "reason", "score_total", "reading_kind") if key in item}
         if edition == "weekly":
             public.update(learning_points=item["learning_points"], reproduction_steps=item["reproduction_steps"])
         notice("Reading example", public)

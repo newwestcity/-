@@ -1,11 +1,14 @@
 name: 阅读与项目完整预览
 on:
+  push:
+    branches: [main]
+    paths: ['.github/workflows/check-digest-preview.yml']
   workflow_dispatch:
     inputs:
       edition:
         description: 选择预览版次（实际检索与编辑可能计费，不发邮件）
         type: choice
-        options: [daily, weekly, both]
+        options: [daily, weekly, both, snowball]
         default: daily
 permissions:
   contents: read
@@ -15,7 +18,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        edition: ${{ inputs.edition == 'weekly' && fromJSON('["weekly"]') || inputs.edition == 'daily' && fromJSON('["daily"]') || fromJSON('["daily","weekly"]') }}
+        edition: ${{ github.event_name == 'push' && fromJSON('["weekly","snowball"]') || inputs.edition == 'snowball' && fromJSON('["snowball"]') || inputs.edition == 'weekly' && fromJSON('["weekly"]') || inputs.edition == 'daily' && fromJSON('["daily"]') || fromJSON('["daily","weekly"]') }}
     runs-on: ubuntu-latest
     timeout-minutes: 25
     env:
@@ -53,7 +56,11 @@ jobs:
         if: matrix.edition == 'daily'
         run: python scripts/inspect_xueqiu_access.py
       - name: 实际检索、原文评审与预览（不发邮件）
+        if: matrix.edition != 'snowball'
         run: python scripts/preview_reading.py
+      - name: 雪球搜索标题链接预览（未读全文、不评分、不发邮件）
+        if: matrix.edition == 'snowball'
+        run: python scripts/preview_xueqiu_links.py
       - name: 保存阅读预览
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9

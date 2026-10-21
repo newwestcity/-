@@ -7,12 +7,14 @@ must verify dates and text before an editor sees any content.
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
+from html import unescape
 from http.client import HTTPException
 import json
 import re
 import ssl
+import unicodedata
 from urllib import error, request
 
 from .provider import ProviderError, _NoRedirects, validate_configuration
@@ -29,6 +31,8 @@ _SEEN = re.compile(r"(?:x:[1-9][0-9]{0,24}|xueqiu:[1-9][0-9]{0,19}|github:[A-Za-
 class XueqiuDiscoveryResult:
     urls: list[str]
     diagnostics: dict[str, int]
+    # Titles are search metadata, never a claim to have read the full article.
+    candidates: list[dict] = field(default_factory=list)
 
 
 def _payloads(model: str, now: datetime, seen_ids: set[str]) -> list[dict]:
@@ -66,13 +70,13 @@ def _payloads(model: str, now: datetime, seen_ids: set[str]) -> list[dict]:
     return payloads
 
 
-def _metadata_urls(data: object) -> tuple[list[str], str]:
+def _metadata_records(data: object) -> tuple[list[dict], str]:
     if not isinstance(data, dict) or data.get("status") != "completed":
         return [], "incomplete"
     output = data.get("output")
     if not isinstance(output, list):
         return [], "incomplete"
-    urls, completed_tool = [], False
+    records, completed_tool = [], False
     for item in output[:100]:
         if not isinstance(item, dict):
             continue
@@ -81,23 +85,39 @@ def _metadata_urls(data: object) -> tuple[list[str], str]:
             action = item.get("action")
             sources = action.get("sources") if isinstance(action, dict) else None
             if isinstance(sources, list):
-                urls.extend(source["url"] for source in sources[:100]
-                            if isinstance(source, dict) and isinstance(source.get("url"), str))
+                records.extend({"url": source["url"], "title": source.get("title")}
+                               for source in sources[:100]
+                               if isinstance(source, dict) and isinstance(source.get("url"), str))
         if item.get("type") == "message" and isinstance(item.get("content"), list):
             for part in item["content"][:100]:
                 if not isinstance(part, dict) or part.get("type") != "output_text":
                     continue
                 annotations = part.get("annotations")
                 if isinstance(annotations, list):
-                    urls.extend(value["url"] for value in annotations[:100]
-                                if isinstance(value, dict) and value.get("type") == "url_citation"
-                                and isinstance(value.get("url"), str))
+                    records.extend({"url": value["url"], "title": value.get("title")}
+                                   for value in annotations[:100]
+                                   if isinstance(value, dict) and value.get("type") == "url_citation"
+                                   and isinstance(value.get("url"), str))
     if not completed_tool:
         return [], "no_tool"
-    return urls, "completed"
+    return records, "completed"
 
 
-def _one(endpoint: str, api_key: str, payload: dict) -> tuple[list[str], str]:
+def _metadata_urls(data: object) -> tuple[list[str], str]:
+    """Compatibility helper; title provenance uses the same metadata parser."""
+    records, code = _metadata_records(data)
+    return [value["url"] for value in records], code
+
+
+def _title(value: object) -> str:
+    if not isinstance(value, str):
+        return ""
+    value = re.sub(r"<[^>]*>", "", unescape(value[:4000]))
+    value = " ".join(value.split())
+    return "".join(char for char in value if not unicodedata.category(char).startswith("C"))[:300].strip()
+
+
+def _one(endpoint: str, api_key: str, payload: dict) -> tuple[list[dict], str]:
     try:
         req = request.Request(endpoint, method="POST", data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
                               headers={"Authorization": "Bearer " + api_key,
@@ -111,7 +131,7 @@ def _one(endpoint: str, api_key: str, payload: dict) -> tuple[list[str], str]:
             data = json.loads(raw.decode("utf-8"))
         except (UnicodeError, ValueError, RecursionError):
             return [], "invalid_json"
-        return _metadata_urls(data)
+        return _metadata_records(data)
     except error.HTTPError as exc:
         # Never read, print or propagate provider bodies, which can echo keys.
         code = exc.code
@@ -141,16 +161,16 @@ def discover_xueqiu(*, base_url: str, api_key: str, model: str, now: datetime,
                    "invalid_url": 0, "duplicate_url": 0, "seen_url": 0, "candidate_urls": 0}
     with ThreadPoolExecutor(max_workers=2) as executor:
         results = list(executor.map(lambda payload: _one(endpoint, api_key, payload), payloads))
-    candidates, used = [], set()
-    for urls, code in results:
+    urls, accepted, titles, used = [], {}, {}, set()
+    for records, code in results:
         if code != "completed":
             diagnostics[code] = diagnostics.get(code, 0) + 1
             continue
         diagnostics["searches_completed"] += 1
         verified = 0
-        for value in urls:
+        for value in records:
             try:
-                canonical, _, article_id = canonical_article_url(value)
+                canonical, _, article_id = canonical_article_url(value.get("url"))
             except (ValueError, TypeError):
                 diagnostics["invalid_url"] += 1
                 continue
@@ -158,14 +178,26 @@ def discover_xueqiu(*, base_url: str, api_key: str, model: str, now: datetime,
             identity = "xueqiu:" + article_id
             if identity in used:
                 diagnostics["duplicate_url"] += 1
+                # A later citation may provide a missing title, but it must
+                # identify the exact same canonical author/article URL.
+                if accepted.get(identity) == canonical and identity not in titles:
+                    if title := _title(value.get("title")):
+                        titles[identity] = title
                 continue
             used.add(identity)
             if identity in seen_ids:
                 diagnostics["seen_url"] += 1
                 continue
-            if len(candidates) < MAX_CANDIDATES:
-                candidates.append(canonical)
+            if len(urls) < MAX_CANDIDATES:
+                urls.append(canonical)
+                accepted[identity] = canonical
+                if title := _title(value.get("title")):
+                    titles[identity] = title
         if not verified:
             diagnostics["no_sources"] = diagnostics.get("no_sources", 0) + 1
-    diagnostics["candidate_urls"] = len(candidates)
-    return XueqiuDiscoveryResult(candidates, diagnostics)
+    candidates = [{"id": identity, "url": canonical, "source": "雪球", "title": titles[identity],
+                   "discovery_basis": "search_metadata", "discovered_at": now.isoformat()}
+                  for identity, canonical in accepted.items() if identity in titles]
+    diagnostics["candidate_urls"] = len(urls)
+    diagnostics["metadata_titled_candidates"] = len(candidates)
+    return XueqiuDiscoveryResult(urls, diagnostics, candidates)

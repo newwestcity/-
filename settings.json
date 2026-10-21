@@ -11,6 +11,7 @@
   "max_classic_count": 3,
   "max_tool_calls": 6,
   "reading": {
+    "xueqiu_link_fallback": true,
     "xueqiu_target": 4,
     "xueqiu_max_age_days": 30,
     "history_days": 90

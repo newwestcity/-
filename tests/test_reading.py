@@ -2,6 +2,7 @@
 
 from datetime import datetime, timedelta, timezone
 from email.message import EmailMessage
+from itertools import count
 import json
 from pathlib import Path
 import smtplib
@@ -11,6 +12,7 @@ import unittest
 from unittest.mock import patch
 
 from x_digest.app import ConfigurationError, load_settings
+from x_digest.editorial import EditorialError
 from x_digest.provider import ProviderError
 from x_digest import reading, reading_state
 
@@ -43,6 +45,11 @@ def article(source="雪球", number=1, *, age=1, category=None, score=90):
 def project(identifier="github:example/tool"):
     return {"id": identifier, "source": "GitHub", "author": identifier.split(":")[1].split("/")[0],
             "url": "https://github.com/" + identifier.split(":", 1)[1], "score_total": 90}
+
+
+def link_candidate(number=1, *, author=None, title="价值投资中的现金流分析方法"):
+    return {"id": f"xueqiu:{number}", "url": f"https://xueqiu.com/{author or 1000 + number}/{number}",
+            "title": title, "discovery_basis": "search_metadata", "discovered_at": NOW.isoformat()}
 
 
 def edition_result(items):
@@ -225,6 +232,162 @@ class ReadingTests(unittest.TestCase):
         self.send.assert_not_called()
         self.assertFalse((self.work / "reading-state.json").exists())
         self.assertFalse((self.work / "preview/digest.json").exists())
+
+    def test_small_weekly_pool_needs_only_one_bounded_editor_call(self):
+        for size in (1, 5):
+            candidates = [project(f"github:owner{i}/tool") for i in range(size)]
+            with self.subTest(size=size), \
+                 patch("x_digest.reading.fetch_projects", return_value=SimpleNamespace(
+                     projects=candidates, diagnostics={"searches_succeeded": 1})), \
+                 patch("x_digest.reading.editorial.curate_projects", side_effect=lambda **kw: kw["items"][:5]) as edit:
+                result = self.run_edition(edition="weekly")
+                self.assertEqual(result["count"], size)
+                edit.assert_called_once()
+                self.assertEqual(edit.call_args.kwargs["target_count"], 5)
+                self.assertEqual({p["id"] for p in edit.call_args.kwargs["items"]},
+                                 {p["id"] for p in candidates})
+        self.send.assert_not_called()
+        self.assertFalse((self.work / "reading-state.json").exists())
+
+    def test_large_weekly_pool_edits_each_candidate_once_in_two_small_batches(self):
+        for size in (6, 17, 20):
+            candidates = [project(f"github:owner{i // 2}/tool{i}") for i in range(size)]
+            with self.subTest(size=size), \
+                 patch("x_digest.reading.fetch_projects", return_value=SimpleNamespace(
+                     projects=candidates, diagnostics={"searches_succeeded": 1})), \
+                 patch("x_digest.reading.editorial.curate_projects", side_effect=lambda **kw: kw["items"][:5]) as edit:
+                result = self.run_edition(edition="weekly")
+                self.assertEqual(edit.call_count, 2)
+                supplied = []
+                for call in edit.call_args_list:
+                    self.assertEqual(call.kwargs["target_count"], 5)
+                    self.assertLessEqual(len(call.kwargs["items"]), 10)
+                    supplied.extend(p["id"] for p in call.kwargs["items"])
+                self.assertCountEqual(supplied, [p["id"] for p in candidates])
+                self.assertEqual(len(supplied), len(set(supplied)))
+                self.assertEqual(result["count"], min(10, size))
+        self.send.assert_not_called()
+        self.assertFalse((self.work / "reading-state.json").exists())
+
+    def test_weekly_owner_limit_applies_before_paid_editing(self):
+        candidates = [project(f"github:oneowner/tool{i}") for i in range(20)]
+        with patch("x_digest.reading.fetch_projects", return_value=SimpleNamespace(
+                 projects=candidates, diagnostics={"searches_succeeded": 1})), \
+             patch("x_digest.reading.editorial.curate_projects", side_effect=lambda **kw: kw["items"][:5]) as edit:
+            result = self.run_edition(edition="weekly")
+        edit.assert_called_once()
+        self.assertEqual(len(edit.call_args.kwargs["items"]), 2)
+        self.assertEqual(result["count"], 2)
+
+    def test_weekly_failed_batch_preserves_successful_batch_without_retries(self):
+        candidates = [project(f"github:owner{i}/tool") for i in range(12)]
+        attempts, survivors = count(), []
+        def curate(**kwargs):
+            if next(attempts) == 0:
+                raise EditorialError("synthetic timeout", code="timeout")
+            survivors.extend(kwargs["items"][:5])
+            return kwargs["items"][:5]
+        with patch("x_digest.reading.fetch_projects", return_value=SimpleNamespace(
+                 projects=candidates, diagnostics={"searches_succeeded": 1})), \
+             patch("x_digest.reading.editorial.curate_projects", side_effect=curate) as edit:
+            result = self.run_edition(edition="weekly")
+        self.assertEqual(edit.call_count, 2)
+        self.assertEqual(result["status"], "preview")
+        self.assertEqual(result["count"], 5)
+        content = json.loads((self.work / "preview/digest.json").read_text())
+        self.assertEqual({p["id"] for p in content["items"]}, {p["id"].casefold() for p in survivors})
+        self.assertEqual(content["coverage"]["source_status"]["GitHub"], "partial")
+        audit = json.loads((self.work / "reading-audit.json").read_text())
+        self.assertEqual(audit["diagnostics"]["editor_error"], "timeout")
+        self.send.assert_not_called()
+        self.assertFalse((self.work / "reading-state.json").exists())
+
+    def test_weekly_all_batches_failed_leave_sanitized_diagnostics_without_mail_or_history(self):
+        candidates = [project(f"github:owner{i}/tool") for i in range(12)]
+        with patch("x_digest.reading.fetch_projects", return_value=SimpleNamespace(
+                 projects=candidates, diagnostics={"searches_succeeded": 1})), \
+             patch("x_digest.reading.editorial.curate_projects", side_effect=EditorialError(
+                 "synthetic private transport details", code="timeout")) as edit:
+            with self.assertRaises(ConfigurationError):
+                self.run_edition(edition="weekly")
+        self.assertEqual(edit.call_count, 2)
+        audit_text = (self.work / "reading-audit.json").read_text()
+        audit = json.loads(audit_text)
+        self.assertEqual(audit["diagnostics"]["editor_error"], "timeout")
+        self.assertEqual(audit["coverage"]["source_status"]["GitHub"], "unavailable")
+        self.assertNotIn("private transport", audit_text)
+        self.build.assert_not_called()
+        self.send.assert_not_called()
+        self.assertFalse((self.work / "reading-state.json").exists())
+        self.assertFalse((self.work / "preview/digest.json").exists())
+
+    def test_snow_link_fallback_only_accepts_matching_search_metadata_and_access_failures(self):
+        rejected = [
+            (link_candidate(11), "not_found"),
+            (link_candidate(12), "identity_mismatch"),
+            (link_candidate(13), "body_too_short"),
+            (link_candidate(14), "access_challenge"),  # Already seen.
+            ({**link_candidate(15), "id": "xueqiu:999"}, "access_challenge"),
+            ({key: value for key, value in link_candidate(16).items() if key != "discovery_basis"}, "access_challenge"),
+            ({**link_candidate(17), "discovery_basis": "generated_text"}, "access_challenge"),
+            (link_candidate(18, title="今天真是美好的一天"), "access_challenge"),
+            (link_candidate(19, title="价值投资稳赚保证收益加群"), "access_challenge"),
+        ]
+        valid = [link_candidate(1), link_candidate(2, author=1001),  # Same publisher as #1.
+                 link_candidate(3), link_candidate(4), link_candidate(5)]
+        # Untrusted fields must never become a generated assessment or author claim.
+        valid[0].update(summary="编造正文摘要", reason="编造推荐理由", author="未经核实作者", score_total=100,
+                        text="未经核实的文章正文")
+        candidates = [p for p, _ in rejected] + valid
+        outcomes = {p["url"]: status for p, status in rejected}
+        outcomes.update({p["url"]: "access_challenge" for p in valid})
+        chosen = reading.add_xueqiu_links([], candidates=candidates, outcomes=outcomes,
+                                         seen={"xueqiu:14"}, settings=self.settings)
+        self.assertEqual([p["id"] for p in chosen], ["xueqiu:1", "xueqiu:3", "xueqiu:4"])
+        self.assertEqual(len({p["author_id"] for p in chosen}), 3)
+        self.assertTrue(all(p["reading_kind"] == "link_candidate" for p in chosen))
+        self.assertTrue(all(not {"summary", "reason", "author", "score_total", "scores", "text"} & p.keys()
+                            for p in chosen))
+        self.assertEqual(chosen[0]["title"], valid[0]["title"])
+        self.assertEqual(chosen[0]["content_basis"], "search_metadata")
+
+    def test_snow_link_candidates_share_three_exception_slots_with_classics_and_unknown_dates(self):
+        existing = [article("X", age=60), article(number=20, age=None)]
+        links = [link_candidate(i) for i in range(1, 5)]
+        outcomes = {p["url"]: "access_denied" for p in links}
+        chosen = reading.add_xueqiu_links(existing, candidates=links, outcomes=outcomes,
+                                         seen=set(), settings=self.settings)
+        self.assertEqual(len(chosen), 3)
+        self.assertEqual(sum(p["reading_kind"] == "link_candidate" for p in chosen), 1)
+        self.assertEqual(existing, chosen[:2])
+        full = existing + [article("X", number=30, age=90)]
+        self.assertEqual(reading.add_xueqiu_links(full, candidates=links, outcomes=outcomes,
+                                                seen=set(), settings=self.settings), full)
+        self.settings["reading"]["xueqiu_link_fallback"] = False
+        self.assertEqual(reading.add_xueqiu_links([], candidates=links, outcomes=outcomes,
+                                                seen=set(), settings=self.settings), [])
+
+    def test_daily_waf_fallback_previews_three_links_without_model_assessment_or_delivery_record(self):
+        links = [link_candidate(i) for i in range(1, 6)]
+        with patch("x_digest.reading.search_by_category", side_effect=ProviderError("synthetic X outage")), \
+             patch("x_digest.reading.fetch_verified_posts") as xfetch, \
+             patch("x_digest.reading.discover_xueqiu", return_value=SimpleNamespace(
+                 urls=[p["url"] for p in links], candidates=links, diagnostics={"searches_completed": 2})), \
+             patch("x_digest.reading.fetch_articles", return_value=SimpleNamespace(articles=[],
+                 diagnostics={"access_challenge": 5}, outcomes={p["url"]: "access_challenge" for p in links})), \
+             patch("x_digest.reading.editorial.curate_articles") as edit:
+            result = self.run_edition()
+        self.assertEqual(result["status"], "preview")
+        self.assertEqual(result["source_counts"], {"雪球": 3})
+        content = json.loads((self.work / "preview/digest.json").read_text())
+        self.assertEqual(content["coverage"]["source_status"], {"X": "unavailable", "雪球": "links_only"})
+        self.assertTrue(all(p["reading_kind"] == "link_candidate" for p in content["items"]))
+        self.assertTrue(all(not {"author", "summary", "reason", "scores", "score_total", "text"} & p.keys()
+                            for p in content["items"]))
+        edit.assert_not_called()
+        xfetch.assert_not_called()
+        self.send.assert_not_called()
+        self.assertFalse((self.work / "reading-state.json").exists())
 
 
 if __name__ == "__main__":

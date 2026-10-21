@@ -9,6 +9,7 @@ from email.utils import format_datetime, make_msgid
 import json
 import os
 from pathlib import Path
+import re
 from zoneinfo import ZoneInfo
 
 from .app import ConfigurationError, check_environment, delivery_lock
@@ -136,6 +137,44 @@ def select_reading(items, *, settings, now):
     return selected
 
 
+def add_xueqiu_links(items, *, candidates, outcomes, seen, settings):
+    """User-approved title/link fallback; never imply a full-article assessment."""
+    if not settings["reading"].get("xueqiu_link_fallback", False):
+        return items
+    used = {item["id"] for item in items} | seen
+    authors = {item.get("author_id") for item in items if item["source"] == "雪球"}
+    exceptions = sum(item.get("reading_kind") in {"classic", "undated", "link_candidate"} for item in items)
+    slots = min(3, settings["max_classic_count"] - exceptions,
+                settings["reading"]["xueqiu_target"] - sum(p["source"] == "雪球" for p in items))
+    result = list(items)
+    finance = re.compile(r"投资|价值|估值|财报|财务|经营|企业|公司|行业|现金流|盈利|资产|风险|金融|银行|保险|股息|"
+                         r"invest|valuation|financial|business|cash.flow", re.I)
+    excluded = re.compile(r"辱华|支那|K线|短线|涨停|喊单|带单|稳赚|保证收益|加群|荐股", re.I)
+    unavailable = {"access_challenge", "unverified_page", "access_denied", "redirect_rejected",
+                   "connection_failed", "rate_limited"}
+    for candidate in candidates:
+        if slots <= 0:
+            break
+        try:
+            url, author_id, article_id = canonical_article_url(candidate["url"])
+            item_id, title = "xueqiu:" + article_id, candidate["title"]
+            if (candidate.get("id") != item_id or candidate.get("discovery_basis") != "search_metadata"
+                    or not isinstance(title, str) or not 6 <= len(title.strip()) <= 240
+                    or not finance.search(title) or excluded.search(title)
+                    or item_id in used or author_id in authors or outcomes.get(url) not in unavailable):
+                continue
+            result.append({"id": item_id, "url": url, "source": "雪球", "title": title.strip(),
+                           "author_id": author_id, "content_basis": "search_metadata",
+                           "reading_kind": "link_candidate", "published_at": "",
+                           "discovered_at": candidate.get("discovered_at", "")})
+            used.add(item_id)
+            authors.add(author_id)
+            slots -= 1
+        except (KeyError, ValueError, TypeError):
+            continue
+    return result
+
+
 def _daily(settings, seen, now):
     credentials = _credentials()
     diagnostics, candidates = {}, []
@@ -202,10 +241,16 @@ def _daily(settings, seen, now):
         elif verified and source_status[source] != "unavailable":
             source_status[source] = "no_qualified"
     selected = select_reading(candidates, settings=settings, now=now)
+    selected = add_xueqiu_links(selected, candidates=getattr(snow, "candidates", []),
+                               outcomes=getattr(fetched, "outcomes", {}), seen=seen, settings=settings)
     counts = Counter(p["source"] for p in selected)
     targets = {"X": settings["target_count"], "雪球": settings["reading"]["xueqiu_target"]}
     for source, count in counts.items():
         source_status[source] = "available" if count >= targets[source] else "partial"
+    if any(p.get("reading_kind") == "link_candidate" for p in selected):
+        diagnostics["xueqiu_link_candidates"] = sum(p.get("reading_kind") == "link_candidate" for p in selected)
+        source_status["雪球"] = "links_only" if all(p.get("reading_kind") == "link_candidate"
+                                                   for p in selected if p["source"] == "雪球") else "partial"
     return selected, {"targets": targets, "source_status": source_status}, diagnostics
 
 
@@ -213,13 +258,33 @@ def _weekly(settings, seen, now):
     fetched = fetch_projects(now=now, limit=20, token=os.environ.get("GH_TOKEN") or None,
                              seen_ids={v for v in seen if v.startswith("github:")})
     projects = [p for p in fetched.projects if p["id"].casefold() not in {i.casefold() for i in seen}]
-    editor_failed = False
-    try:
-        selected = editorial.curate_projects(**_credentials(), items=projects, target_count=10, now=now) if projects else []
-    except ProviderError as error:
-        selected, editor_failed = [], True
-        fetched.diagnostics["editor_failed"] = 1
-        fetched.diagnostics["editor_error"] = _editor_code(error)
+    # Independent short reviews avoid one response containing ten long plans.
+    owner_candidates, eligible = Counter(), []
+    for project in projects:
+        owner = project["author"].casefold()
+        if owner_candidates[owner] < 2:
+            eligible.append(project)
+            owner_candidates[owner] += 1
+    pools = ([eligible] if len(eligible) <= 5 else [eligible[::2], eligible[1::2]]) if eligible else []
+    selected, failures, reviews = [], 0, []
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        futures = []
+        for pool in pools:
+            review = {}
+            reviews.append(review)
+            futures.append(executor.submit(editorial.curate_projects, **_credentials(), items=pool,
+                                           target_count=5, now=now, diagnostics=review))
+        for future in futures:
+            try:
+                selected.extend(future.result())
+            except ProviderError as error:
+                failures += 1
+                fetched.diagnostics["editor_failed"] = failures
+                fetched.diagnostics["editor_error"] = _editor_code(error)
+                field = getattr(error, "field", "")
+                if field in editorial.EDITORIAL_ERROR_FIELDS:
+                    fetched.diagnostics["editor_field"] = field
+    fetched.diagnostics["editor_reviews"] = reviews
     # Limit a publisher to two recommendations; identity is collector-owned.
     owners, chosen = Counter(), []
     for project in sorted(selected, key=lambda p: -p["score_total"]):
@@ -230,7 +295,7 @@ def _weekly(settings, seen, now):
     status = "available" if len(chosen) == 10 else ("partial" if chosen else "no_qualified")
     if not fetched.projects:
         status = "unavailable" if not fetched.diagnostics.get("searches_succeeded") else "no_candidates"
-    if editor_failed:
+    if failures and not chosen:
         status = "unavailable"
     return chosen, {"targets": {"GitHub": 10}, "source_status": {"GitHub": status}}, fetched.diagnostics
 
@@ -278,4 +343,5 @@ def run_reading(settings: dict, *, work_dir: Path, send: bool, edition="daily", 
                 raise ConfigurationError("SMTP已接受邮件，但发送记录保存失败；重跑前请先核对收件箱") from exc
         return {"status": "smtp_accepted" if send else "preview", "edition": edition, "date": date,
                 "count": len(items), "source_counts": dict(Counter(item["source"] for item in items)),
-                "classic_count": sum(item.get("reading_kind") == "classic" for item in items)}
+                "classic_count": sum(item.get("reading_kind") == "classic" for item in items),
+                "link_candidate_count": sum(item.get("reading_kind") == "link_candidate" for item in items)}

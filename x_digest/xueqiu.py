@@ -13,7 +13,7 @@ https://github.com/chenkongming/xueqiu-article-crawler/blob/prod/report.py
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from html.parser import HTMLParser
 from http.client import HTTPException
@@ -42,6 +42,7 @@ _BLOCK_TAGS = {"p", "div", "li", "h1", "h2", "h3", "h4", "h5", "blockquote", "br
 class ArticleFetchResult:
     articles: list[dict]
     diagnostics: dict[str, int]
+    outcomes: dict[str, str] = field(default_factory=dict)
 
 
 class _UnverifiedPage(ValueError):
@@ -342,6 +343,8 @@ def _parse_page(raw: bytes, url: str, now: datetime) -> dict:
     if identities and page.body_blocks == 1 and not page.body_depth and not page.body_invalid:
         return _article(url=url, author=page.author, title="".join(page.title_parts),
                         text="\n".join(page.body_parts), date=page.published, now=now, text_is_plain=True)
+    if any(marker in text.lower() for marker in ("acw_sc__v2", "_waf_", "__jsl_clearance")):
+        raise _UnverifiedPage("access_challenge")
     raise _UnverifiedPage("unverified_page")
 
 
@@ -430,7 +433,7 @@ def fetch_articles(urls: list[str], *, now: datetime, limit: int = MAX_ARTICLES)
     if not isinstance(urls, list) or type(limit) is not int or not 1 <= limit <= MAX_ARTICLES:
         raise ValueError("Expected article URLs and a limit from 1 to 12")
     utc_now = now.astimezone(timezone.utc)
-    labels = ("invalid_url", "duplicate_url", "verified", "unknown_date", "access_denied", "not_found",
+    labels = ("invalid_url", "duplicate_url", "verified", "unknown_date", "access_denied", "access_challenge", "not_found",
               "rate_limited", "http_error", "redirect_rejected", "connection_failed", "unverified_page",
               "body_too_short", "identity_mismatch", "future_date", "response_too_large")
     diagnostics = dict.fromkeys(labels, 0)
@@ -448,13 +451,15 @@ def fetch_articles(urls: list[str], *, now: datetime, limit: int = MAX_ARTICLES)
         candidates.append(url)
         if len(candidates) >= limit:
             break
-    articles, ids = [], set()
+    articles, ids, outcomes = [], set(), {}
     if candidates:
         with ThreadPoolExecutor(max_workers=2) as executor:
-            for article, reason in executor.map(lambda value: _fetch_one(value, utc_now), candidates):
-                diagnostics[reason if reason in diagnostics else "unverified_page"] += 1
+            for url, (article, reason) in zip(candidates, executor.map(lambda value: _fetch_one(value, utc_now), candidates)):
+                reason = reason if reason in diagnostics else "unverified_page"
+                outcomes[url] = reason
+                diagnostics[reason] += 1
                 if article is not None and article["id"] not in ids:
                     articles.append(article)
                     ids.add(article["id"])
                     diagnostics["unknown_date"] += not bool(article["published_at"])
-    return ArticleFetchResult(articles, diagnostics)
+    return ArticleFetchResult(articles, diagnostics, outcomes)

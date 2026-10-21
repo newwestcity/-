@@ -158,6 +158,7 @@ _SOURCE_STATUS_LABELS = {
     "no_candidates": "本期未找到候选内容",
     "no_qualified": "本期没有通过筛选的内容",
     "not_run": "本期未检索",
+    "links_only": "仅提供搜索标题与原文链接，未读取全文、未做深度评分",
 }
 
 
@@ -259,7 +260,12 @@ def _coverage_lines(items: list[dict], edition: str, coverage: dict | None) -> l
     lines = []
     for source in sources:
         count = sum(item["source"] == source for item in items)
-        line = f"{source}：本期 {count} {'个项目' if edition == 'weekly' else '篇'}，目标 {targets[source]} {'个' if edition == 'weekly' else '篇'}"
+        candidate_count = sum(item["source"] == source and item.get("reading_kind") == "link_candidate" for item in items)
+        if candidate_count:
+            count -= candidate_count
+            line = f"{source}：本期 {count} 篇，另附 {candidate_count} 条阅读候选；目标 {targets[source]} 篇"
+        else:
+            line = f"{source}：本期 {count} {'个项目' if edition == 'weekly' else '篇'}，目标 {targets[source]} {'个' if edition == 'weekly' else '篇'}"
         if source in statuses:
             line += "；" + _SOURCE_STATUS_LABELS[statuses[source]]
         if count < targets[source]:
@@ -307,6 +313,19 @@ def build_reading_message(
             raise ValueError("阅读条目重复")
         identities.add(identity)
         title = _reading_text(item.get("title"), "title", 240)
+        if item.get("reading_kind") == "link_candidate" or item.get("content_basis") == "search_metadata":
+            if (item["source"] != "雪球" or item.get("reading_kind") != "link_candidate"
+                    or item.get("content_basis") != "search_metadata"):
+                raise ValueError("搜索链接候选必须明确标记为雪球搜索元数据")
+            # No model summary, guessed author/date, score, or learning claim
+            # can be promoted from a search title into an article assessment.
+            prepared.append((
+                item["source"], title, url,
+                ["雪球阅读候选｜未读取全文，未做深度评分", "原文日期未确认，不计作近期文章"],
+                "", "", [], "", [],
+                "仅依据搜索工具返回的标题和原文链接；请打开阅读全文", True,
+            ))
+            continue
         summary = _reading_text(item.get("summary"), "summary", 1000)
         reason = _reading_text(item.get("reason"), "reason", 600)
         learning = _reading_list(item, "learning_points", 1, 5)
@@ -360,17 +379,25 @@ def build_reading_message(
                 basis = "评审依据：已取得的雪球原文正文。"
             else:
                 basis = "评审依据：已取得的雪球正文摘录；请打开原文阅读全文。"
-        prepared.append((item["source"], title, url, meta, summary, reason, learning, score, extra, basis))
+        prepared.append((item["source"], title, url, meta, summary, reason, learning, score, extra, basis, False))
 
     title = "每周 GitHub 项目精选" if edition == "weekly" else "每日阅读精选"
     unit = "个" if edition == "weekly" else "篇"
     overview = _coverage_lines(items, edition, coverage)
+    candidate_count = sum(row[-1] for row in prepared)
+    if candidate_count:
+        overview.append(f"本期另附 {candidate_count} 条雪球阅读候选，仅提供搜索标题和原文链接；未读取全文，未做深度评分。")
     rubric = (
         "筛选：优先 AI 应用、自动化与实用工具；可学性 30、可复刻性 30、实用性 20、热度 10、维护 10。"
         if edition == "weekly" else
         "筛选：优先有完整论证的长文与讨论；深度 30、证据 25、可学性 25、可读性 10、时效 10。"
     )
     score_notice = "分数为编辑评估，不代表事实真伪保证。只提供导读和原文链接，请结合原文判断。"
+    if candidate_count:
+        rubric += "该标准仅适用于已核实正文的文章，雪球阅读候选不参与评分。"
+    if candidate_count and candidate_count == len(items):
+        rubric = "本期仅提供雪球搜索链接候选，尚未核实正文内容。"
+        score_notice = "标题来自搜索工具返回的来源元数据；请打开原文判断是否值得阅读全文。"
     text_parts = [f"{title} · {date}", *overview, rubric, score_notice]
     html_parts = [
         '<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"></head>',
@@ -387,8 +414,19 @@ def build_reading_message(
             continue
         text_parts.append(f"【{source}】")
         html_parts.append(f"<h2>{escape(source)}</h2>")
-        for _, item_title, url, meta, summary, reason, learning, score, extra, basis in group:
+        for _, item_title, url, meta, summary, reason, learning, score, extra, basis, link_candidate in group:
             index += 1
+            if link_candidate:
+                text_parts.append("\n".join([f"{index}. {item_title}", *meta, basis, f"原文：{url}"]))
+                html_parts.extend([
+                    '<article style="border-top:1px solid #ddd;padding:12px 0">',
+                    f'<h3>{index}. <a href="{escape(url, quote=True)}">{escape(item_title)}</a></h3>',
+                    *[f'<p style="color:#666">{escape(line)}</p>' for line in meta],
+                    f'<p style="color:#666">{escape(basis)}</p>',
+                    f'<p><a href="{escape(url, quote=True)}">打开原文</a></p>',
+                    "</article>",
+                ])
+                continue
             text_parts.append("\n".join([
                 f"{index}. {item_title}", *meta,
                 f"导读：{summary}", f"为什么读：{reason}",
@@ -415,7 +453,10 @@ def build_reading_message(
     message = EmailMessage()
     message["From"] = sender
     message["To"] = recipient
-    message["Subject"] = f"{title}｜{date}｜{len(items)}{unit}"
+    count_label = f"{len(items)}{unit}"
+    if candidate_count:
+        count_label = f"{len(items) - candidate_count}篇+{candidate_count}条候选"
+    message["Subject"] = f"{title}｜{date}｜{count_label}"
     message.set_content("\n\n".join(text_parts))
     message.add_alternative("\n".join(html_parts), subtype="html")
     return message

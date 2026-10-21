@@ -167,6 +167,32 @@ class XueqiuTests(unittest.TestCase):
                 self.assertEqual(result.articles, [])
                 self.assertEqual(result.diagnostics["unverified_page"], 1)
 
+    def test_known_waf_markers_have_fixed_challenge_outcome_only_without_verified_body(self):
+        for marker in ("acw_sc__v2", "_WAF_", "__jsl_clearance"):
+            with self.subTest(marker=marker):
+                result, _ = self.call(raw=(f'<html><script>{marker} = "opaque";</script></html>').encode())
+                self.assertEqual(result.articles, [])
+                self.assertEqual(result.diagnostics["access_challenge"], 1)
+                self.assertEqual(result.outcomes, {URL: "access_challenge"})
+        result, _ = self.call(raw=page(body=BODY + " This article mentions acw_sc__v2."))
+        self.assertEqual(len(result.articles), 1)
+        self.assertEqual(result.outcomes, {URL: "verified"})
+        self.assertEqual(result.diagnostics["access_challenge"], 0)
+
+    def test_outcomes_are_by_requested_canonical_url_and_preserve_rejection_reasons(self):
+        urls = [f"https://xueqiu.com/1/{i}" for i in range(1, 9)]
+        reasons = ["unverified_page", "access_denied", "connection_failed", "rate_limited",
+                   "not_found", "identity_mismatch", "future_date", "body_too_short"]
+        mapping = dict(zip(urls, reasons))
+        with patch.object(xueqiu, "_fetch_one", side_effect=lambda url, now: (None, mapping[url])) as fetch:
+            result = xueqiu.fetch_articles(["https://example.org/no", urls[0] + "?from=search", *urls], now=NOW)
+        self.assertEqual(result.outcomes, mapping)
+        self.assertEqual(fetch.call_count, len(urls))
+        self.assertEqual(result.diagnostics["duplicate_url"], 1)
+        self.assertEqual(result.diagnostics["invalid_url"], 1)
+        self.assertEqual(result.articles, [])
+        self.assertEqual(xueqiu.ArticleFetchResult([], {}).outcomes, {})
+
     def test_ambiguous_publication_is_unknown_and_future_date_is_rejected(self):
         for value in (None, "", True, 1234, "yesterday", "2026-10-18", "2026-10-18T08:00:00"):
             with self.subTest(date=value):

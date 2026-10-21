@@ -87,6 +87,8 @@ def load_settings(path: Path) -> dict:
         reading = value["reading"]
         if not isinstance(reading, dict):
             raise ConfigurationError("reading 必须是配置对象")
+        if type(reading.get("xueqiu_link_fallback", False)) is not bool:
+            raise ConfigurationError("雪球链接候选开关必须是布尔值")
         for key, low, high in (("xueqiu_target", 3, 4), ("xueqiu_max_age_days", 1, 30),
                                ("history_days", 1, 180)):
             if type(reading.get(key)) is not int or not low <= reading[key] <= high:

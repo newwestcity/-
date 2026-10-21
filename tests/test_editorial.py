@@ -255,6 +255,56 @@ class EditorialTests(unittest.TestCase):
             with self.subTest(url=url), self.assertRaises(editorial.EditorialError):
                 self.call(base_url=url)
 
+    def test_project_keeps_valid_items_when_other_candidates_fail_validation(self):
+        good, bad = project(), project()
+        bad.update(id="github:owner/second", url="https://github.com/owner/second")
+        invalid = dict(project_output(), id=bad["id"], summary="x" * 181)
+        forged = dict(project_output(), id="github:unknown/unverified")
+        diagnostics = {}
+        result, _, _ = self.call([invalid, project_output(), forged], projects=True,
+                                 items=[good, bad], diagnostics=diagnostics)
+        self.assertEqual([value["id"] for value in result], [good["id"]])
+        self.assertEqual(diagnostics["items_received"], 3)
+        self.assertEqual(diagnostics["items_invalid"], 2)
+        self.assertEqual(diagnostics["invalid_invalid_length_summary"], 1)
+        self.assertEqual(diagnostics["invalid_invalid_id_id"], 1)
+        self.assertEqual(diagnostics["items_selected"], 1)
+        self.assertTrue(set(diagnostics) <= editorial.EDITORIAL_DIAGNOSTIC_KEYS)
+        with self.assertRaises(editorial.EditorialError) as caught:
+            self.call([invalid], projects=True, items=[bad])
+        self.assertEqual(caught.exception.field, "summary")
+        self.assertNotIn("x" * 50, str(caught.exception))
+
+    def test_overselection_is_ranked_and_capped_but_over_twenty_is_rejected(self):
+        candidates, output = [], []
+        for index in range(20):
+            source, value = project(), project_output()
+            source.update(id=f"github:owner/tool{index}", url=f"https://github.com/owner/tool{index}")
+            value["id"] = source["id"]
+            candidates.append(source)
+            output.append(value)
+        output[-1]["scores"] = {"learnability": 30, "reproducibility": 30, "practicality": 20,
+                                 "popularity": 10, "maintenance": 10}
+        result, _, _ = self.call(output, projects=True, items=candidates, target_count=1)
+        self.assertEqual([value["id"] for value in result], [candidates[-1]["id"]])
+        with self.assertRaises(editorial.EditorialError) as caught:
+            self.call(output + [output[0]], projects=True, items=candidates, target_count=1)
+        self.assertEqual((caught.exception.code, caught.exception.field), ("invalid_length", "items"))
+        low = project_output()
+        low["scores"]["learnability"] = 10
+        self.assertEqual(self.call([low], projects=True)[0], [])
+
+    def test_long_evidence_is_verified_in_full_before_shortening(self):
+        quote = project()["readme_text"][:400]
+        value = dict(project_output(), evidence_excerpt=quote)
+        result, _, _ = self.call([value], projects=True)
+        self.assertEqual(result[0]["evidence_excerpt"], quote[:180].rstrip())
+        value["evidence_excerpt"] += " invented ending absent from original README"
+        with self.assertRaises(editorial.EditorialError) as caught:
+            self.call([value], projects=True)
+        self.assertEqual(caught.exception.code, "evidence_quote")
+        self.assertEqual(caught.exception.field, "evidence_excerpt")
+
 
 if __name__ == "__main__":
     unittest.main()

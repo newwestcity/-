@@ -169,6 +169,48 @@ class ReadingMessageTests(unittest.TestCase):
         self.assertIn("雪球：本期 0 篇", text)
         self.assertNotIn("https://", text)
 
+    def test_snowball_search_candidate_has_no_body_review_score_or_learning_claim(self):
+        candidate = {
+            "source": "雪球", "id": "xueqiu:789", "url": "https://xueqiu.com/123/789",
+            "reading_kind": "link_candidate", "content_basis": "search_metadata",
+            "title": "搜索工具返回的测试标题",
+        }
+        message = self.build([candidate], coverage={"source_status": {"雪球": "links_only"}})
+        self.assertEqual(message["Subject"], "每日阅读精选｜2026-10-21｜0篇+1条候选")
+        for body in self.bodies(message):
+            self.assertIn("雪球：本期 0 篇，另附 1 条阅读候选", body)
+            self.assertIn("雪球阅读候选｜未读取全文，未做深度评分", body)
+            self.assertIn("原文日期未确认，不计作近期文章", body)
+            self.assertIn("仅依据搜索工具返回的标题和原文链接", body)
+            self.assertIn("https://xueqiu.com/123/789", body)
+            for unwanted in ("深度 30", "编辑评分", "能学到", "为什么读", "导读：", "原文正文"):
+                self.assertNotIn(unwanted, body)
+
+    def test_candidate_ignores_unverified_model_text_dates_scores_and_author(self):
+        candidate = article(
+            source="雪球", id="xueqiu:789", url="https://xueqiu.com/123/789",
+            reading_kind="link_candidate", content_basis="search_metadata",
+            title='<img src=x onerror="alert(1)">搜索标题', author="FAKE_AUTHOR",
+            summary="FAKE_SUMMARY", reason="FAKE_REASON", learning_points=["FAKE_LEARNING"],
+        )
+        message = self.build([article(), candidate])
+        self.assertEqual(message["Subject"], "每日阅读精选｜2026-10-21｜1篇+1条候选")
+        for body in self.bodies(message):
+            for unwanted in ("FAKE_AUTHOR", "FAKE_SUMMARY", "FAKE_REASON", "FAKE_LEARNING"):
+                self.assertNotIn(unwanted, body)
+        html = message.get_body(preferencelist=("html",)).get_content()
+        self.assertNotIn("<img", html)
+        self.assertIn("&lt;img", html)
+
+    def test_candidate_mode_requires_snowball_and_both_metadata_markers(self):
+        for item in (
+            article(reading_kind="link_candidate", content_basis="search_metadata"),
+            article(source="雪球", id="xueqiu:789", url="https://xueqiu.com/123/789", reading_kind="link_candidate"),
+            article(source="雪球", id="xueqiu:789", url="https://xueqiu.com/123/789", content_basis="search_metadata"),
+        ):
+            with self.subTest(item=item), self.assertRaises(ValueError):
+                self.build([item])
+
 
 if __name__ == "__main__":
     unittest.main()

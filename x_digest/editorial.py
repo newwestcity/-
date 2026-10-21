@@ -29,6 +29,11 @@ EDITORIAL_ERROR_CODES = frozenset({
     "invalid_scores", "invalid_length", "invalid_field", "evidence_quote", "ungrounded_path",
     "ungrounded_command", "execution_claim", "generated_url", "unexpected_tool_call",
 })
+EDITORIAL_ERROR_FIELDS = frozenset({"id", "items", "title", "summary", "reason", "learning_points",
+    "scores", "evidence_excerpt", "reproduction_steps", "difficulty", "prerequisites", "effort_estimate"})
+EDITORIAL_DIAGNOSTIC_KEYS = frozenset({"items_received", "items_invalid", "items_below_threshold",
+    "items_accepted", "items_selected"} | {"invalid_" + code for code in EDITORIAL_ERROR_CODES}
+    | {"invalid_" + code + "_" + field for code in EDITORIAL_ERROR_CODES for field in EDITORIAL_ERROR_FIELDS})
 _ARTICLE_SCORES = {"depth": 30, "evidence": 25, "learning": 25, "readability": 10, "timeliness": 10}
 _PROJECT_SCORES = {"learnability": 30, "reproducibility": 30, "practicality": 20,
                    "popularity": 10, "maintenance": 10}
@@ -45,13 +50,14 @@ _EXECUTION_CLAIM = re.compile(r"实测(?:可用|成功|通过)|(?:已|已经)(?:
 class EditorialError(ProviderError):
     """A fixed, sanitized error safe to display in a run summary."""
 
-    def __init__(self, message: str, *, code: str = "invalid_output"):
+    def __init__(self, message: str, *, code: str = "invalid_output", field: str = ""):
         super().__init__(message)
         self.code = code if isinstance(code, str) and code in EDITORIAL_ERROR_CODES else "invalid_output"
+        self.field = field if isinstance(field, str) and field in EDITORIAL_ERROR_FIELDS else ""
 
 
-def _invalid_output(reason: str = "invalid_output") -> EditorialError:
-    return EditorialError("编辑输出不符合约定或缺少原文依据；未采用本次评审", code=reason)
+def _invalid_output(reason: str = "invalid_output", field: str = "") -> EditorialError:
+    return EditorialError("编辑输出不符合约定或缺少原文依据；未采用本次评审", code=reason, field=field)
 
 
 def _normalized(value: str) -> str:
@@ -150,43 +156,43 @@ def _chat(*, endpoint, api_key, model, prompt, target, timeout=REQUEST_TIMEOUT):
         raise _invalid_output("bad_keys")
     if not isinstance(result["items"], list):
         raise _invalid_output("invalid_field")
-    if len(result["items"]) > target:
-        raise _invalid_output("invalid_length")
+    if len(result["items"]) > 20:
+        raise _invalid_output("invalid_length", "items")
     return result["items"]
 
 
-def _text(value, maximum, *, generated=True):
+def _text(value, maximum, *, generated=True, field=""):
     if not isinstance(value, str):
-        raise _invalid_output("invalid_field")
+        raise _invalid_output("invalid_field", field)
     if not value.strip() or len(value) > maximum:
-        raise _invalid_output("invalid_length")
+        raise _invalid_output("invalid_length", field)
     if generated and _GENERATED_URL.search(value):
-        raise _invalid_output("generated_url")
+        raise _invalid_output("generated_url", field)
     if generated and any(ord(c) < 32 and c not in "\n\t" for c in value):
-        raise _invalid_output("invalid_field")
+        raise _invalid_output("invalid_field", field)
     return value.strip()
 
 
-def _list(value, *, minimum, maximum, length):
+def _list(value, *, minimum, maximum, length, field=""):
     if not isinstance(value, list):
-        raise _invalid_output("invalid_field")
+        raise _invalid_output("invalid_field", field)
     if not minimum <= len(value) <= maximum:
-        raise _invalid_output("invalid_length")
-    return [_text(item, length) for item in value]
+        raise _invalid_output("invalid_length", field)
+    return [_text(item, length, field=field) for item in value]
 
 
 def _scores(value, limits):
     if (not isinstance(value, dict) or set(value) != set(limits)
             or any(type(value[key]) is not int or not 0 <= value[key] <= limit for key, limit in limits.items())):
-        raise _invalid_output("invalid_scores")
+        raise _invalid_output("invalid_scores", "scores")
     return dict(value), sum(value.values())
 
 
 def _evidence(value, text):
-    quote = _text(value, 180, generated=False)
+    quote = _text(value, 1000, generated=False, field="evidence_excerpt")
     if len(_normalized(quote)) < 12 or _normalized(quote) not in _normalized(text):
-        raise _invalid_output("evidence_quote")
-    return quote
+        raise _invalid_output("evidence_quote", "evidence_excerpt")
+    return quote[:180].rstrip()
 
 
 def _article_sources(items, source):
@@ -318,7 +324,7 @@ def curate_articles(*, base_url: str, api_key: str, model: str, items: list[dict
                        "score_notice": "分数为编辑评估，不代表事实真伪保证",
                        "reading_kind": "undated" if not public["published_at"] else ("classic" if classic else "recent"),
                        "is_long_read": len(body) >= 700 or len(body.split()) >= 150})
-    return sorted(result, key=lambda item: -item["score_total"])
+    return sorted(result, key=lambda item: -item["score_total"])[:target_count]
 
 
 def _project_sources(items):
@@ -356,23 +362,31 @@ def _project_sources(items):
 
 
 def _grounded_steps(texts, readme):
-    for text in texts:
+    for entry in texts:
+        field, text = entry if isinstance(entry, tuple) else ("", entry)
         if _EXECUTION_CLAIM.search(text):
-            raise _invalid_output("execution_claim")
+            raise _invalid_output("execution_claim", field)
         if any(token not in readme for token in _FILE.findall(text)):
-            raise _invalid_output("ungrounded_path")
+            raise _invalid_output("ungrounded_path", field)
         if any(_normalized(code) not in _normalized(readme) for code in re.findall(r"`([^`]+)`", text)):
-            raise _invalid_output("ungrounded_command")
+            raise _invalid_output("ungrounded_command", field)
 
 
 def curate_projects(*, base_url: str, api_key: str, model: str, items: list[dict],
-                    target_count: int = 10, now: datetime) -> list[dict]:
+                    target_count: int = 10, now: datetime, diagnostics: dict | None = None) -> list[dict]:
     """Choose educational projects from supplied metadata and README excerpts.
 
     No installation or execution occurs. Popularity remains the collector's
     observed proxy; total stars are never relabelled as weekly star growth.
     """
     endpoint = _configuration(base_url, api_key, model, items, target_count, now)
+    if diagnostics is not None and (not isinstance(diagnostics, dict)
+            or any(key not in EDITORIAL_DIAGNOSTIC_KEYS or type(value) is not int or value < 0
+                   for key, value in diagnostics.items())):
+        raise EditorialError("编辑诊断配置无效；未发起编辑请求", code="invalid_configuration")
+    counters = diagnostics if diagnostics is not None else {}
+    def count(key):
+        counters[key] = counters.get(key, 0) + 1
     verified = _project_sources(items)
     if not verified:
         return []
@@ -400,32 +414,50 @@ def curate_projects(*, base_url: str, api_key: str, model: str, items: list[dict
     )
     output = _chat(endpoint=endpoint, api_key=api_key, model=model, prompt=prompt, target=target_count,
                    timeout=PROJECT_REQUEST_TIMEOUT)
-    result, selected = [], set()
+    result, selected, first_error, valid_count = [], set(), None, 0
     for value in output:
-        if not isinstance(value, dict) or set(value) != _PROJECT_KEYS:
-            raise _invalid_output("bad_keys")
-        item_id = value.get("id")
-        if not isinstance(item_id, str) or item_id not in verified or item_id in selected:
-            raise _invalid_output("invalid_id")
-        public, readme = verified[item_id]
-        scores, total = _scores(value["scores"], _PROJECT_SCORES)
-        fields = {"title": _text(value["title"], 100), "summary": _text(value["summary"], 180),
-                  "reason": _text(value["reason"], 100),
-                  "learning_points": _list(value["learning_points"], minimum=2, maximum=3, length=80),
-                  "reproduction_steps": _list(value["reproduction_steps"], minimum=3, maximum=3, length=150),
-                  "prerequisites": _list(value["prerequisites"], minimum=1, maximum=4, length=80),
-                  "effort_estimate": _text(value["effort_estimate"], 60),
-                  "evidence_excerpt": _evidence(value["evidence_excerpt"], readme)}
-        if not isinstance(value["difficulty"], str) or value["difficulty"] not in {"入门", "中等", "进阶"}:
-            raise _invalid_output("invalid_field")
-        _grounded_steps([fields["title"], fields["summary"], fields["reason"], *fields["reproduction_steps"],
-                         *fields["learning_points"], *fields["prerequisites"]], readme)
+        count("items_received")
+        try:
+            if not isinstance(value, dict) or set(value) != _PROJECT_KEYS:
+                raise _invalid_output("bad_keys")
+            item_id = value.get("id")
+            if not isinstance(item_id, str) or item_id not in verified or item_id in selected:
+                raise _invalid_output("invalid_id", "id")
+            public, readme = verified[item_id]
+            scores, total = _scores(value["scores"], _PROJECT_SCORES)
+            fields = {"title": _text(value["title"], 100, field="title"),
+                      "summary": _text(value["summary"], 180, field="summary"),
+                      "reason": _text(value["reason"], 100, field="reason"),
+                      "learning_points": _list(value["learning_points"], minimum=2, maximum=3, length=80, field="learning_points"),
+                      "reproduction_steps": _list(value["reproduction_steps"], minimum=3, maximum=3, length=150, field="reproduction_steps"),
+                      "prerequisites": _list(value["prerequisites"], minimum=1, maximum=4, length=80, field="prerequisites"),
+                      "effort_estimate": _text(value["effort_estimate"], 60, field="effort_estimate"),
+                      "evidence_excerpt": _evidence(value["evidence_excerpt"], readme)}
+            if not isinstance(value["difficulty"], str) or value["difficulty"] not in {"入门", "中等", "进阶"}:
+                raise _invalid_output("invalid_field", "difficulty")
+            grounded = [(key, fields[key]) for key in ("title", "summary", "reason")]
+            grounded += [(key, text) for key in ("reproduction_steps", "learning_points", "prerequisites") for text in fields[key]]
+            _grounded_steps(grounded, readme)
+        except EditorialError as exc:
+            first_error = first_error or exc
+            count("items_invalid")
+            count("invalid_" + exc.code)
+            if exc.field:
+                count("invalid_" + exc.code + "_" + exc.field)
+            continue
+        valid_count += 1
         selected.add(item_id)
         if total < 75 or scores["learnability"] < 18 or scores["reproducibility"] < 18:
+            count("items_below_threshold")
             continue
+        count("items_accepted")
         fields["effort_estimate"] = "估计：" + fields["effort_estimate"]
         result.append({**public, **fields, "category": "GitHub 学习项目", "scores": scores, "score_total": total,
                        "difficulty": value["difficulty"], "reproduction_verified": False,
                        "assessment_basis": "仅评审README与仓库公开元数据；未实际安装或运行",
                        "score_notice": "分数为编辑评估，复现步骤与工作量仅为建议和估计"})
-    return sorted(result, key=lambda item: -item["score_total"])
+    if not valid_count and first_error is not None:
+        raise first_error
+    chosen = sorted(result, key=lambda item: -item["score_total"])[:target_count]
+    counters["items_selected"] = counters.get("items_selected", 0) + len(chosen)
+    return chosen
