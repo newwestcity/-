@@ -14,7 +14,7 @@
 
 `https://n.tokeness.dev/v1` 与 `gpt-6-luna` 的普通对话已[实测成功](https://github.com/newwestcity/-/actions/runs/39462398796)：HTTP 200、非空回复、`finish_reason=stop`。这把密钥的目录列出了 GPT 6 等型号，未列出先前预设的 GPT 4/5 mini 型号。
 
-[X 搜索验证](https://github.com/newwestcity/-/actions/workflows/check-x-search.yml)独立测试一次标准 Responses `web_search`（最多一次工具调用，240 秒超时），只有完整搜索记录与独立 X 原帖引用同时存在才通过；正文链接仅列为未验证候选，不会让检查通过。同时仅显示邮件变量/授权码是否存在，不公开它们的值、不连接 SMTP。此验证不启用每日发送。
+[X 搜索验证](https://github.com/newwestcity/-/actions/workflows/check-x-search.yml)先用一次短普通对话确认模型响应，再测试一次标准 Responses `web_search`（最多一次工具调用，240 秒超时）；两次模型请求可能计费。只有完整搜索记录与独立 X 原帖引用同时存在才通过；正文链接仅列为未验证候选，不会让检查通过。同时仅显示邮件变量/授权码是否存在，不公开它们的值、不连接 SMTP。此验证不启用每日发送。
 
 X 搜索已[实测成功](https://github.com/newwestcity/-/actions/runs/39464437212)：HTTP 200，完整搜索记录，2 条有效 X 原帖来源。[完整日报预览](https://github.com/newwestcity/-/actions/workflows/check-digest-preview.yml)进一步运行实际的六领域搜索、筛选、来源/时效/去重校验与 HTML 渲染，不连接 SMTP；HTML 可从工作流附件下载。
 
@@ -65,6 +65,8 @@ python3 -m x_digest --fetch --send
 ## GitHub 定时运行
 
 [工作流](.github/workflows/daily-digest.yml)包含北京时间 08:00 的每日计划和手动运行入口。当前实现已完成内容示范投递，每日计划默认开启；仓库Variable `DIGEST_ENABLED=false`可停用，`true`或未设置为开启。每次测试任务仅公开生效开关的布尔值，不输出变量原文。
+
+[实际生效状态已核实](https://github.com/newwestcity/-/actions/runs/39581021782)：`enabled=true`，首次自动计划为2026-10-22北京时间08:00。推送时测试通过，检索与发送按设计跳过，等待正常计划触发。
 
 准备接入时，在 GitHub 仓库的 **Settings → Secrets and variables → Actions** 配置：
 
