@@ -39,7 +39,7 @@ jobs:
       (github.event_name == 'workflow_dispatch' ||
       (github.event_name == 'schedule' && vars.DIGEST_ENABLED == 'true'))
     runs-on: ubuntu-latest
-    timeout-minutes: 12
+    timeout-minutes: 15
     env:
       DIGEST_API_BASE: ${{ vars.DIGEST_API_BASE || 'https://n.tokeness.dev/v1' }}
       DIGEST_MODEL: ${{ vars.DIGEST_MODEL || 'gpt-6-luna' }}

@@ -1,9 +1,6 @@
 name: X 公开正文读取检查（非推荐或近期检索）
 
 on:
-  push:
-    paths:
-      - .github/workflows/check-post-access.yml
   workflow_dispatch:
 
 permissions:

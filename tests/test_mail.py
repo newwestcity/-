@@ -84,6 +84,20 @@ class BuildMessageTests(unittest.TestCase):
         self.assertIn("没有符合筛选要求的帖子", text)
         self.assertNotIn("https://", text)
 
+    def test_classics_are_identified_as_old_reading_with_beijing_publication_date(self):
+        post = fixture_post(
+            reading_kind="classic", published_at="2024-01-01T18:30:00+00:00"
+        )
+        message = self.build([post])
+        for content_type in ("plain", "html"):
+            content = message.get_body(preferencelist=(content_type,)).get_content()
+            self.assertIn("其中近期 0 条，经典阅读 1 条", content)
+            self.assertIn("本期近期检索未取得合格帖子，仅提供经典阅读", content)
+            self.assertIn("经典阅读 · 原帖 2024-01-02（北京时间）", content)
+        for invalid_date in (None, "", "2024-01-01", "2024-01-01T18:30:00", "invalid"):
+            with self.subTest(published_at=invalid_date), self.assertRaises(ValueError):
+                self.build([fixture_post(reading_kind="classic", published_at=invalid_date)])
+
 
 class SendMessageTests(unittest.TestCase):
     def message(self):

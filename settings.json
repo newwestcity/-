@@ -7,6 +7,8 @@
   "history_days": 45,
   "max_age_days": 7,
   "max_offer_age_hours": 72,
+  "classic_categories": ["股市", "投资", "读书"],
+  "max_classic_count": 3,
   "max_tool_calls": 6,
   "categories": ["科技", "AI", "股市", "投资", "读书", "学生羊毛"],
   "languages": ["zh", "en"],

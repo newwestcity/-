@@ -3,18 +3,21 @@
 from __future__ import annotations
 
 from collections import OrderedDict
+from datetime import datetime
 from email.headerregistry import Address
 from email.message import EmailMessage
 from html import escape
 import re
 import smtplib
 import ssl
+from zoneinfo import ZoneInfo
 
 
 _POST_URL = re.compile(
     r"https://(?:x\.com|twitter\.com)/[A-Za-z0-9_]{1,15}/status/[0-9]+/?"
 )
 _REQUIRED_FIELDS = ("id", "url", "author", "category", "summary", "reason")
+_BEIJING = ZoneInfo("Asia/Shanghai")
 
 
 def _mailbox(value: str, field: str) -> str:
@@ -27,6 +30,26 @@ def _mailbox(value: str, field: str) -> str:
     if not parsed.username or not parsed.domain:
         raise ValueError(f"{field} 邮箱地址无效")
     return str(parsed)
+
+
+def _reading_label(post: dict) -> str:
+    classic = post.get("reading_kind") == "classic"
+    kind = "经典阅读" if classic else "近期"
+    published_at = post.get("published_at")
+    if published_at is None or published_at == "":
+        if classic:
+            raise ValueError("经典阅读必须提供包含时区的原帖发布日期")
+        return f"{kind} · 原帖日期未提供"
+    try:
+        if not isinstance(published_at, str):
+            raise ValueError
+        published = datetime.fromisoformat(published_at)
+        if published.tzinfo is None or published.utcoffset() is None:
+            raise ValueError
+        local_date = published.astimezone(_BEIJING).strftime("%Y-%m-%d")
+    except (ValueError, OverflowError) as exc:
+        raise ValueError("原帖发布日期必须是合法且包含时区的 ISO 日期时间") from exc
+    return f"{kind} · 原帖 {local_date}（北京时间）"
 
 
 def build_message(
@@ -51,7 +74,7 @@ def build_message(
     if not isinstance(requested_count, int) or isinstance(requested_count, bool) or requested_count < 1:
         raise ValueError("requested_count 必须是正整数")
 
-    groups: OrderedDict[str, list[dict]] = OrderedDict()
+    groups: OrderedDict[str, list[tuple[dict, str]]] = OrderedDict()
     for post in posts:
         if not isinstance(post, dict) or any(
             not isinstance(post.get(field), str) or not post[field].strip()
@@ -60,10 +83,15 @@ def build_message(
             raise ValueError("帖子缺少必要的非空字符串字段")
         if not _POST_URL.fullmatch(post["url"]):
             raise ValueError("帖子链接必须是 X 或 Twitter 的 HTTPS 原帖地址")
-        groups.setdefault(post["category"], []).append(post)
+        groups.setdefault(post["category"], []).append((post, _reading_label(post)))
 
     count = len(posts)
     overview = f"本期精选 {count} 条，目标 {requested_count} 条。"
+    classic_count = sum(post.get("reading_kind") == "classic" for post in posts)
+    if classic_count:
+        overview += f"其中近期 {count - classic_count} 条，经典阅读 {classic_count} 条。"
+        if classic_count == count:
+            overview += "本期近期检索未取得合格帖子，仅提供经典阅读。"
     if count < requested_count:
         overview += "符合要求的内容不足，宁缺毋滥，不补入未经核实的帖子。"
     text_parts = [f"每日 X 精选 · {digest_date}", overview]
@@ -76,10 +104,11 @@ def build_message(
     for category, category_posts in groups.items():
         text_parts.append(f"\n【{category}】")
         html_parts.append(f"<h2>{escape(category)}</h2>")
-        for post in category_posts:
+        for post, reading_label in category_posts:
             index += 1
             text_parts.append(
                 f"{index}. {post['author']}\n"
+                f"{reading_label}\n"
                 f"摘要：{post['summary']}\n"
                 f"推荐理由：{post['reason']}\n"
                 f"原帖：{post['url']}"
@@ -87,6 +116,7 @@ def build_message(
             html_parts.append(
                 "<article>"
                 f"<h3>{index}. {escape(post['author'])}</h3>"
+                f"<p>{escape(reading_label)}</p>"
                 f"<p><strong>摘要：</strong>{escape(post['summary'])}</p>"
                 f"<p><strong>推荐理由：</strong>{escape(post['reason'])}</p>"
                 f'<p><a href="{escape(post["url"], quote=True)}">查看原帖</a></p>'

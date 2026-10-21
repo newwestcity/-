@@ -1,10 +1,6 @@
 name: QQ 邮箱连接测试
 
 on:
-  push:
-    paths:
-      - scripts/check_mail.py
-      - .github/workflows/check-mail.yml
   workflow_dispatch:
 
 permissions:

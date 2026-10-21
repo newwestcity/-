@@ -70,6 +70,15 @@ def load_settings(path: Path) -> dict:
         entries = value.get(name)
         if not isinstance(entries, list) or any(not isinstance(v, str) for v in entries):
             raise ConfigurationError(f"{name} 必须是字符串列表")
+    classic_categories = value.get("classic_categories", [])
+    classic_limit = value.get("max_classic_count", 0)
+    if (not isinstance(classic_categories, list)
+            or any(not isinstance(c, str) or c not in {"股市", "投资", "读书"} or c not in categories
+                   for c in classic_categories)
+            or len(set(classic_categories)) != len(classic_categories)
+            or type(classic_limit) is not int or not 0 <= classic_limit <= 3
+            or (classic_limit and not classic_categories)):
+        raise ConfigurationError("经典阅读仅允许股市、投资、读书，数量必须为0到3条")
     ZoneInfo(value["timezone"])
     return value
 
@@ -109,7 +118,7 @@ def delivery_lock(path: Path):
 
 
 def run_digest(settings: dict, *, work_dir: Path, send: bool, now: datetime | None = None) -> dict:
-    from .provider import search_by_category
+    from .provider import ProviderError, SearchResult, search_by_category
 
     now = (now or datetime.now(ZoneInfo(settings["timezone"]))).astimezone(ZoneInfo(settings["timezone"]))
     date = now.date().isoformat()
@@ -130,29 +139,59 @@ def run_digest(settings: dict, *, work_dir: Path, send: bool, now: datetime | No
         (work_dir / 'retrieval-audit.json').write_text(json.dumps({'sources': audit}, ensure_ascii=False),
                                                      encoding='utf-8')
         diagnostics: dict[str, int] = {}
-        def select_result(value, counts):
+        def select_result(value, counts, *, classic_ids=None):
             return select_posts(value.posts, categories=settings["categories"], target_count=settings["target_count"],
                                 max_per_category=settings["max_per_category"], max_per_author=settings["max_per_author"],
                                 blocked_accounts=settings["blocked_accounts"], seen_ids=seen, cited_urls=value.cited_urls,
                                 now=now, max_age_days=settings.get("max_age_days", 7),
-                                max_offer_age_hours=settings.get("max_offer_age_hours", 72), diagnostics=counts)
+                                max_offer_age_hours=settings.get("max_offer_age_hours", 72), diagnostics=counts,
+                                classic_categories=settings.get("classic_categories", []),
+                                max_classic_count=settings.get("max_classic_count", 0),
+                                verified_classic_ids=classic_ids)
         posts = select_result(result, diagnostics)
         diagnostics.update(inventory)
-        if not posts and fresh_urls:
+        classic_urls = ([item['url'] for item in audit if item['status'] == 'old']
+                        if settings.get('max_classic_count', 0) and len(posts) < settings['target_count'] else [])
+        fresh_fallback_urls = fresh_urls if not posts else []
+        if fresh_fallback_urls or classic_urls:
             from .oembed import fetch_verified_posts
             from .provider import curate_verified_posts
-            verified = fetch_verified_posts(fresh_urls, now=now)
+            verified = fetch_verified_posts(fresh_fallback_urls + classic_urls, now=now)
             diagnostics['oembed_verified_posts'] = len(verified)
-            if verified:
-                curated = curate_verified_posts(base_url=os.environ['DIGEST_API_BASE'],
-                                                api_key=os.environ['DIGEST_API_KEY'],
-                                                model=os.environ['DIGEST_MODEL'], settings=settings, posts=verified)
+            fresh_ids = {canonical_post_url(url)[1] for url in fresh_fallback_urls}
+            old_ids = {canonical_post_url(url)[1] for url in classic_urls}
+            editor_error = None
+            for classic, allowed_ids in ((False, fresh_ids), (True, old_ids)):
+                if classic and len(posts) >= settings['target_count']:
+                    break
+                source_posts = [post for post in verified if post['id'] in allowed_ids]
+                diagnostics['classic_verified_posts' if classic else 'recent_verified_posts'] = len(source_posts)
+                if not source_posts:
+                    continue
+                try:
+                    kwargs = {'classic': True} if classic else {}
+                    curated = curate_verified_posts(base_url=os.environ['DIGEST_API_BASE'],
+                                                    api_key=os.environ['DIGEST_API_KEY'],
+                                                    model=os.environ['DIGEST_MODEL'], settings=settings,
+                                                    posts=source_posts, **kwargs)
+                except ProviderError as exc:
+                    editor_error = exc
+                    diagnostics['classic_editor_failed' if classic else 'recent_editor_failed'] = 1
+                    continue
                 curated_counts: dict[str, int] = {}
-                posts = select_result(curated, curated_counts)
-                diagnostics.update({'curated_' + key: value for key, value in curated_counts.items()})
+                # Only the grounded editor's old candidates may use the classic
+                # exemption. Never reintroduce unverified search-written summaries.
+                combined = SearchResult([*posts, *curated.posts],
+                                        [*(post['url'] for post in posts), *curated.cited_urls], {})
+                posts = select_result(combined, curated_counts,
+                                      classic_ids={post['id'] for post in source_posts} if classic else None)
+                prefix = 'classic_' if classic else 'curated_'
+                diagnostics.update({prefix + key: value for key, value in curated_counts.items()})
                 result.usage = {field: sum(value for value in (result.usage.get(field), curated.usage.get(field))
                                           if type(value) is int and value >= 0)
                                 for field in ('input_tokens', 'output_tokens', 'total_tokens')}
+            if not posts and editor_error is not None:
+                raise editor_error
         if not posts:
             raise ConfigurationError("没有通过来源、时效和去重检查的帖子；本次停止发信；筛选统计："
                                      + json.dumps(diagnostics, separators=(",", ":")))
@@ -175,7 +214,9 @@ def run_digest(settings: dict, *, work_dir: Path, send: bool, now: datetime | No
                                 sent_at=now.isoformat(), history_days=settings["history_days"])
             except (ValueError, OSError) as exc:
                 raise ConfigurationError("SMTP已接受邮件，但发送记录保存失败；重跑前请先核对收件箱") from exc
-        return {"status": "smtp_accepted" if send else "preview", "date": date, "count": len(posts)}
+        classic_count = sum(post.get('reading_kind') == 'classic' for post in posts)
+        return {"status": "smtp_accepted" if send else "preview", "date": date, "count": len(posts),
+                "recent_count": len(posts) - classic_count, "classic_count": classic_count}
 
 
 def main(argv: list[str] | None = None) -> int:

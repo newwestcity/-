@@ -163,6 +163,44 @@ class ProviderTests(unittest.TestCase):
         self.assertEqual(json.loads(opener.open.call_args.args[0].data)["max_output_tokens"], 3000)
         self.assertEqual(opener.open.call_args.kwargs["timeout"], 120)
 
+    def test_recent_queries_have_dynamic_dates_and_bilingual_topic_terms(self):
+        categories = ["科技", "AI", "股市", "投资", "读书", "学生羊毛"]
+        settings = dict(SETTINGS, categories=categories, classic_categories=["股市", "投资", "读书"],
+                        max_classic_count=3)
+        prompt = provider._payload("configured", settings, set(), NOW)["input"][1]["content"]
+        self.assertIn("当前时间：2026-10-20T00:00:00+00:00", prompt)
+        self.assertIn("科技：site:x.com (科技 OR technology OR 开源 OR opensource) after:2026-10-13 before:2026-10-21", prompt)
+        self.assertIn("AI：site:x.com (AI OR 人工智能 OR LLM OR machine learning) after:2026-10-13 before:2026-10-21", prompt)
+        self.assertIn("student discount OR student benefits) after:2026-10-17 before:2026-10-21", prompt)
+        self.assertIn("过去72小时", prompt)
+        self.assertIn("整期经典最多 3 条", prompt)
+        self.assertIn("不能当作近期检索成功", prompt)
+        self.assertIn("旧行情、旧财报时点判断、当年的估值判断", prompt)
+        other_now = datetime(2027, 1, 2, 8, 0, tzinfo=timezone.utc)
+        later = provider._payload("configured", settings, set(), other_now)["input"][1]["content"]
+        self.assertIn("after:2026-12-26 before:2027-01-03", later)
+        self.assertNotIn("after:2026-10-13", later)
+
+    def test_category_search_only_allows_classic_exception_for_current_eligible_topics(self):
+        configured = dict(SETTINGS, classic_categories=["股市", "投资", "读书"])
+        ai_only = provider._payload("configured", dict(configured, categories=["AI"]), set(), NOW)
+        self.assertNotIn("经典旧帖例外", ai_only["input"][1]["content"])
+        books_only = provider._payload("configured", dict(configured, categories=["读书"]), set(), NOW)
+        prompt = books_only["input"][1]["content"]
+        self.assertIn('经典旧帖例外仅适用于当前分类中的["读书"]', prompt)
+        self.assertIn("这些分类仍优先近期内容", prompt)
+
+    def test_invalid_classic_search_configuration_fails_before_network(self):
+        invalid = [{"classic_categories": ["AI"]}, {"classic_categories": ["读书", "读书"]},
+                   {"classic_categories": "读书"}, {"classic_categories": [None]},
+                   {"max_classic_count": True}, {"max_classic_count": -1}]
+        for override in invalid:
+            with self.subTest(override=override), patch.object(provider.request, "build_opener") as build:
+                with self.assertRaises(provider.ProviderError):
+                    provider.search(base_url="https://relay.example/v1", api_key=SECRET, model="configured",
+                                    settings=dict(SETTINGS, **override), seen_ids=set(), now=NOW)
+                build.assert_not_called()
+
     def test_invalid_output_or_timeout_fails_before_network(self):
         cases = [{"settings": dict(SETTINGS, max_output_tokens=value)}
                  for value in (0, True, 3000.0, 10001, "3000")]
@@ -335,6 +373,72 @@ class VerifiedCurationTests(unittest.TestCase):
         self.assertTrue(any(isinstance(handler, provider._NoRedirects) for handler in build.call_args.args))
         self.assertEqual(result.cited_urls, [REAL_URL])
         self.assertEqual(result.usage, {"input_tokens": 7, "output_tokens": 3, "total_tokens": 10})
+        self.assertEqual(result.posts[0]["published_at"], verified[0]["published_at"])
+        self.assertEqual(result.posts[0]["verified_at"], verified[0]["verified_at"])
+        self.assertNotIn("reading_kind", result.posts[0])
+
+    def test_classic_curation_uses_original_verified_dates_and_caps_target_at_three(self):
+        settings = dict(SETTINGS, categories=["AI", "投资", "读书"], classic_categories=["投资", "读书"],
+                        max_classic_count=9)
+        verified = self.verified()
+        verified[0].update(text="安全边际应源自审慎估计内在价值，并为估计失误保留空间。",
+                           published_at="2018-03-01T12:00:00+00:00", verified_at=NOW)
+        output = [{"url": REAL_URL, "category": "投资", "summary": "安全边际为估值误差保留空间。",
+                   "reason": "现在仍可学习审慎估值与应对不确定性的方法。"}]
+        result, opener, _ = self.call(data=self.data(output), posts=verified, settings=settings, classic=True)
+        self.assertEqual(result.posts[0]["published_at"], "2018-03-01T12:00:00+00:00")
+        self.assertEqual(result.posts[0]["verified_at"], NOW.isoformat())
+        self.assertEqual(result.posts[0]["reading_kind"], "classic")
+        prompt = json.loads(opener.open.call_args.args[0].data)["messages"][1]["content"]
+        self.assertIn("最多选择 3 条", prompt)
+        self.assertIn('允许分类：["投资", "读书"]', prompt)
+        self.assertIn("旧财报时点判断、荐股、当年的估值判断", prompt)
+        self.assertIn("reason 必须解释现在仍值得学什么", prompt)
+        self.assertIn("不得当作近期检索成功", prompt)
+        self.assertNotIn("2018-03-01", output[0]["summary"])
+
+    def test_classic_categories_and_cap_are_enforced_on_model_output(self):
+        settings = dict(SETTINGS, categories=["AI", "投资", "读书"], classic_categories=["投资", "读书"],
+                        max_classic_count=2)
+        ai_output = [{"url": REAL_URL, "category": "AI", "summary": "旧产品消息", "reason": "测试"}]
+        with self.assertRaises(provider.ProviderError):
+            self.call(data=self.data(ai_output), settings=settings, classic=True)
+        classic_post = {"url": REAL_URL, "category": "投资", "summary": "安全边际", "reason": "审慎估值方法"}
+        with self.assertRaises(provider.ProviderError):
+            self.call(data=self.data([classic_post] * 3), settings=settings, classic=True)
+        model_date = {**classic_post, "published_at": NOW.isoformat()}
+        with self.assertRaises(provider.ProviderError):
+            self.call(data=self.data([model_date]), settings=settings, classic=True)
+
+    def test_classic_configuration_and_verified_dates_are_checked_before_network(self):
+        base = dict(SETTINGS, categories=["AI", "投资", "读书"], classic_categories=["投资", "读书"])
+        overrides = [dict(base, classic_categories=[]), dict(base, classic_categories=["AI"]),
+                     dict(base, classic_categories=["股市"]), dict(base, classic_categories="投资"),
+                     dict(base, classic_categories=["投资", "投资"]), dict(base, classic_categories=[{}]),
+                     dict(base, max_classic_count=True), dict(base, max_classic_count=0)]
+        for settings in overrides:
+            opener = Mock()
+            with self.subTest(settings=settings):
+                with self.assertRaises(provider.ProviderError):
+                    self.call(settings=settings, classic=True, opener=opener)
+                opener.open.assert_not_called()
+        for field, value in (("published_at", "2018-03-01"), ("verified_at", "unknown"), ("author", "wrong")):
+            verified = self.verified()
+            verified[0][field] = value
+            opener = Mock()
+            with self.subTest(field=field):
+                with self.assertRaises(provider.ProviderError):
+                    self.call(settings=base, posts=verified, classic=True, opener=opener)
+                opener.open.assert_not_called()
+
+    def test_normal_curation_keeps_original_target_and_categories(self):
+        settings = dict(SETTINGS, classic_categories=["投资"], max_classic_count=1)
+        result, opener, _ = self.call(settings=settings)
+        prompt = json.loads(opener.open.call_args.args[0].data)["messages"][1]["content"]
+        self.assertIn("最多选择 10 条", prompt)
+        self.assertIn('允许分类：["AI", "读书"]', prompt)
+        self.assertNotIn("本次为明确允许的经典旧帖编辑", prompt)
+        self.assertNotIn("reading_kind", result.posts[0])
 
     def test_model_cannot_rename_verified_author_to_bypass_blocklist(self):
         output = [{"url": "https://x.com/innocent/status/12345", "category": "AI",
