@@ -14,7 +14,7 @@ jobs:
       GH_TOKEN: ${{ github.token }}
     steps:
       - name: 下载本仓库已生成的脱敏审计文件（不调用模型或SMTP）
-        run: gh run download 39621638121 --repo newwestcity/- --name reading-preview-weekly --dir diagnostic
+        run: gh run download 39624057213 --repo newwestcity/- --name reading-preview-snowball --dir diagnostic
       - name: 显示固定编辑错误码
         run: |
           python - <<'PY'
@@ -24,7 +24,6 @@ jobs:
           if len(paths) != 1 or paths[0].stat().st_size > 65536:
               raise SystemExit('Unexpected diagnostic artifact')
           data = json.loads(paths[0].read_text())
-          allowed = {'api_requests', 'searches_succeeded', 'readmes_requested', 'projects_verified', 'editor_failed', 'editor_error'}
-          report = {key: value for key, value in data['diagnostics'].items() if key in allowed}
-          print('::notice title=Weekly editor diagnostic::' + json.dumps(report, separators=(',', ':')))
+          report = data
+          print('::notice title=Snowball metadata diagnostic::' + json.dumps(report, separators=(',', ':')))
           PY
