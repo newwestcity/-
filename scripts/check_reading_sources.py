@@ -18,6 +18,7 @@ def main():
               "xueqiu": {"verified_articles": len(snow.articles), "diagnostics": snow.diagnostics},
               "model_called": False, "mail_sent": False}
     print(json.dumps(report, ensure_ascii=False, indent=2))
+    print('::notice title=Source access report::' + json.dumps(report, separators=(',', ':')))
     target = os.environ.get("GITHUB_STEP_SUMMARY")
     if target:
         with open(target, "a", encoding="utf-8") as stream:
