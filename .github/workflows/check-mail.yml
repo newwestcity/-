@@ -30,5 +30,14 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
         with:
           python-version: '3.12'
+      - name: 显示配置是否存在（不显示内容）
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          status = {name + '_configured': bool(os.environ.get(name, '').strip())
+                    for name in ('SMTP_USERNAME', 'SMTP_AUTH_CODE', 'MAIL_TO')}
+          print('::notice title=Mail configuration::' + json.dumps(status))
+          PY
       - name: 发送邮箱连接测试
         run: python scripts/check_mail.py --send-test
