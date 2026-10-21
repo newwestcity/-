@@ -1,0 +1,239 @@
+name: 发送已生成的首期预览
+
+on:
+  push:
+    paths:
+      - .github/workflows/send-first-preview.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: daily-x-digest
+  cancel-in-progress: false
+
+jobs:
+  send-cached-preview:
+    if: github.ref_name == github.event.repository.default_branch
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      SOURCE_RUN_ID: '39578665264'
+      SOURCE_SHA: '088df71d2c381f19ecf6eddabfca5b241962ce3c'
+      EXPECTED_URL: https://x.com/keyahayek/status/1812344441312813407
+      GH_TOKEN: ${{ github.token }}
+      SMTP_USERNAME: ${{ vars.SMTP_USERNAME }}
+      SMTP_AUTH_CODE: ${{ secrets.SMTP_AUTH_CODE }}
+      MAIL_TO: ${{ vars.MAIL_TO }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        with:
+          python-version: '3.12'
+      - uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25 # v5
+        with:
+          path: .local/state.json
+          key: x-digest-history-v1-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: x-digest-history-v1-
+      - name: 验证来源并投递既有预览（不重新检索或调用模型）
+        run: |
+          python - <<'PY'
+          from datetime import datetime
+          from email.utils import format_datetime, make_msgid
+          from html.parser import HTMLParser
+          import json
+          import os
+          from pathlib import Path
+          import re
+          import smtplib
+          import subprocess
+          from zoneinfo import ZoneInfo
+
+          from x_digest.app import delivery_lock
+          from x_digest.mail import build_message, send_message
+          from x_digest.state import already_sent, load_state, record_delivery
+
+          class Failure(ValueError):
+              pass
+
+          def gh(args, label):
+              try:
+                  result = subprocess.run(['gh', *args], capture_output=True, text=True, timeout=45)
+              except (OSError, subprocess.TimeoutExpired):
+                  raise Failure(label + '_unavailable') from None
+              if result.returncode:
+                  raise Failure(label + '_failed')
+              return result.stdout
+
+          class PreviewHTML(HTMLParser):
+              allowed = {'html', 'head', 'meta', 'body', 'h1', 'h2', 'h3', 'p', 'strong', 'a', 'article'}
+              blocks = {'h1', 'h2', 'h3', 'p', 'article'}
+
+              def __init__(self, expected_url):
+                  super().__init__(convert_charrefs=True)
+                  self.expected_url = expected_url
+                  self.stack, self.parts, self.links, self.headings = [], [], [], []
+                  self.h1_parts = []
+                  self.articles = 0
+
+              def handle_decl(self, decl):
+                  if decl.casefold() != 'doctype html':
+                      raise Failure('artifact_html_invalid')
+
+              def handle_starttag(self, tag, attrs):
+                  if tag not in self.allowed or len(dict(attrs)) != len(attrs):
+                      raise Failure('artifact_html_invalid')
+                  expected_attrs = ({'lang': 'zh-CN'} if tag == 'html' else
+                                    {'charset': 'utf-8'} if tag == 'meta' else
+                                    {'href': self.expected_url} if tag == 'a' else {})
+                  if dict(attrs) != expected_attrs:
+                      raise Failure('artifact_html_invalid')
+                  if tag == 'meta':
+                      if not self.stack or self.stack[-1] != 'head':
+                          raise Failure('artifact_html_invalid')
+                      return
+                  if tag == 'h1':
+                      if self.headings or 'h1' in self.stack:
+                          raise Failure('artifact_html_invalid')
+                      self.h1_parts = []
+                  if tag == 'article':
+                      self.articles += 1
+                  if tag == 'a':
+                      self.links.append(self.expected_url)
+                  if tag in self.blocks:
+                      self.parts.append('\n')
+                  self.stack.append(tag)
+
+              def handle_startendtag(self, tag, attrs):
+                  if tag != 'meta':
+                      raise Failure('artifact_html_invalid')
+                  self.handle_starttag(tag, attrs)
+
+              def handle_endtag(self, tag):
+                  if not self.stack or self.stack[-1] != tag:
+                      raise Failure('artifact_html_invalid')
+                  if tag == 'h1':
+                      self.headings.append(''.join(self.h1_parts))
+                  if tag == 'a':
+                      self.parts.append(' (' + self.expected_url + ')')
+                  self.stack.pop()
+                  if tag in self.blocks:
+                      self.parts.append('\n')
+
+              def handle_data(self, data):
+                  if 'h1' in self.stack:
+                      self.h1_parts.append(data)
+                  if 'body' in self.stack:
+                      self.parts.append(data)
+
+              def handle_comment(self, data):
+                  raise Failure('artifact_html_invalid')
+
+              def handle_pi(self, data):
+                  raise Failure('artifact_html_invalid')
+
+              def unknown_decl(self, data):
+                  raise Failure('artifact_html_invalid')
+
+          def main():
+              now = datetime.now(ZoneInfo('Asia/Shanghai'))
+              date = now.date().isoformat()
+              state_path = Path('.local/state.json')
+              with delivery_lock(Path('.local/run.lock')):
+                  state = load_state(state_path)
+                  if already_sent(state, date):
+                      return
+                  sender = os.environ.get('SMTP_USERNAME', '')
+                  password = os.environ.get('SMTP_AUTH_CODE', '')
+                  recipient = os.environ.get('MAIL_TO') or sender
+                  if not sender.strip() or not password.strip():
+                      raise Failure('missing_smtp_configuration')
+                  # Validate destination fields without contacting SMTP.
+                  message = build_message([], recipient=recipient, sender=sender, digest_date=date)
+                  repo = os.environ.get('GITHUB_REPOSITORY', '')
+                  run_id = os.environ.get('SOURCE_RUN_ID', '')
+                  sha = os.environ.get('SOURCE_SHA', '')
+                  expected_url = os.environ.get('EXPECTED_URL', '')
+                  if (not re.fullmatch(r'[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+', repo)
+                          or not re.fullmatch(r'[0-9]+', run_id)
+                          or not re.fullmatch(r'[0-9a-f]{40}', sha)
+                          or expected_url != 'https://x.com/keyahayek/status/1812344441312813407'):
+                      raise Failure('invalid_source_configuration')
+                  raw_metadata = gh(['api', f'repos/{repo}/actions/runs/{run_id}'], 'source_run_read')
+                  if len(raw_metadata) > 512 * 1024:
+                      raise Failure('source_run_invalid')
+                  source = json.loads(raw_metadata)
+                  if (not isinstance(source, dict) or str(source.get('id')) != run_id
+                          or source.get('status') != 'completed' or source.get('conclusion') != 'success'
+                          or source.get('head_branch') != 'main' or source.get('head_sha') != sha
+                          or source.get('path') != '.github/workflows/check-digest-preview.yml'
+                          or (source.get('repository') or {}).get('full_name') != repo
+                          or (source.get('head_repository') or {}).get('full_name') != repo):
+                      raise Failure('source_run_invalid')
+                  destination = Path('.local/first-preview')
+                  destination.mkdir(parents=True, exist_ok=False)
+                  gh(['run', 'download', run_id, '--repo', repo, '--name', 'digest-preview',
+                      '--dir', str(destination)], 'artifact_download')
+                  entries = list(destination.rglob('*'))
+                  html_files = [path for path in entries if path.is_file() and path.suffix.casefold() == '.html']
+                  if (any(path.is_symlink() for path in entries) or len(html_files) != 1
+                          or html_files[0].name != 'digest.html'
+                          or not html_files[0].resolve().is_relative_to(destination.resolve())):
+                      raise Failure('artifact_files_invalid')
+                  with html_files[0].open('rb') as stream:
+                      raw_html = stream.read(256 * 1024 + 1)
+                  if not raw_html or len(raw_html) > 256 * 1024:
+                      raise Failure('artifact_size_invalid')
+                  html = raw_html.decode('utf-8')
+                  parsed = PreviewHTML(expected_url)
+                  parsed.feed(html)
+                  parsed.close()
+                  if (parsed.stack or parsed.headings != ['每日 X 精选 · ' + date]
+                          or parsed.links != [expected_url] or parsed.articles != 1):
+                      raise Failure('artifact_content_invalid')
+                  plain = '\n'.join(line.strip() for line in ''.join(parsed.parts).splitlines() if line.strip())
+                  if not plain:
+                      raise Failure('artifact_content_invalid')
+                  message.clear_content()
+                  message.replace_header('Subject', f'每日 X 精选｜{date}｜1 条（首期预览）')
+                  message.set_content(plain)
+                  message.add_alternative(html, subtype='html')
+                  message['Date'] = format_datetime(now)
+                  message['Message-ID'] = make_msgid(domain=sender.rsplit('@', 1)[-1])
+                  send_message(message, host='smtp.qq.com', port=465, username=sender, password=password)
+                  print('::notice::smtp_accepted=true')
+                  print('::notice::post_count=1')
+                  print('::notice::recent_count=0')
+                  print('::notice::classic_count=1')
+                  try:
+                      record_delivery(state_path, state, date=date, post_ids=['1812344441312813407'],
+                                      sent_at=now.isoformat(), history_days=45)
+                  except Exception:
+                      raise Failure('history_write_failed_after_smtp_acceptance') from None
+
+          try:
+              main()
+          except Failure as exc:
+              print('::error::' + str(exc))
+              raise SystemExit(1)
+          except smtplib.SMTPResponseException as exc:
+              code = exc.smtp_code if type(exc.smtp_code) is int and 100 <= exc.smtp_code <= 999 else 0
+              print(f'::error::smtp_failed_code_{code}')
+              raise SystemExit(1)
+          except smtplib.SMTPException:
+              print('::error::smtp_failed')
+              raise SystemExit(1)
+          except Exception:
+              print('::error::first_preview_failed')
+              raise SystemExit(1)
+          PY
+      - name: 保存已发记录，供后续日报去重
+        if: success() && hashFiles('.local/state.json') != ''
+        uses: actions/cache/save@caa296126883cff596d87d8935842f9db880ef25 # v5
+        with:
+          path: .local/state.json
+          key: x-digest-history-v1-${{ github.run_id }}-${{ github.run_attempt }}
