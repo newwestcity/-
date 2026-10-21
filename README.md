@@ -18,6 +18,8 @@
 
 X 搜索已[实测成功](https://github.com/newwestcity/-/actions/runs/39464437212)：HTTP 200，完整搜索记录，2 条有效 X 原帖来源。[完整日报预览](https://github.com/newwestcity/-/actions/workflows/check-digest-preview.yml)进一步运行实际的六领域搜索、筛选、来源/时效/去重校验与 HTML 渲染，不连接 SMTP；HTML 可从工作流附件下载。
 
+[最近一次完整预览](https://github.com/newwestcity/-/actions/runs/39469686167)取得了15条原帖来源，但全部超过7天窗口，没有生成日报。检索协议可用不代表能稳定找到近期优质帖子；目前仍需解决内容来源问题，不能据此开启定时发送。[公开正文读取检查](https://github.com/newwestcity/-/actions/workflows/check-post-access.yml)只验证已有公开链接的官方 oEmbed 正文，不调用模型、不发邮件，也不证明这些旧帖符合推荐要求。
+
 此步骤在 GitHub 自己的执行机器上运行，与 Codex 开发环境的保存、发布分开。当前 Codex 执行机器仍无法连到 `n.tokeness.dev`，请求被网络代理拒绝；这不能判断 Tokeness 本身或密钥是否正常。
 
 需要重新验证时，沿用 GitHub 仓库 Secret `DIGEST_API_KEY`，依次打开普通 API、X 搜索或完整日报预览工作流，点 **Run workflow**。这些调用可能计费；不会修改变量、发邮件或启用每日计划。看到聊天正文中的链接不能证明检索成功；没有返回独立来源时停止发信。
@@ -65,8 +67,10 @@ python3 -m x_digest --fetch --send
 准备接入时，在 GitHub 仓库的 **Settings → Secrets and variables → Actions** 配置：
 
 - Secrets：`DIGEST_API_KEY`、`SMTP_AUTH_CODE`。
-- Variables：`SMTP_USERNAME` 必填；`MAIL_TO` 可选，默认发给自己。`DIGEST_API_BASE`、`DIGEST_MODEL` 可选覆盖；工作流已内置成功调用的 Tokeness 地址与 `gpt-6-luna`。这不代表 X 原帖检索已验证通过。
+- Variables：`SMTP_USERNAME` 必填；`MAIL_TO` 可选，默认发给自己。`DIGEST_API_BASE`、`DIGEST_MODEL` 可选覆盖；工作流已内置成功调用的 Tokeness 地址与 `gpt-6-luna`。这不代表完整日报已验证通过。
 - 开通 QQ 邮箱 SMTP 后，授权码只填入 Secrets。不要写入仓库、聊天或工作流正文。
+
+[邮箱连接测试](https://github.com/newwestcity/-/actions/workflows/check-mail.yml)单独发送一封明确标注的纯文本测试邮件，不调用模型、不启用日报。日志只显示配置是否存在和固定状态，不显示邮箱地址或授权码。首次配置检查已确认发件邮箱存在，尚缺 `SMTP_AUTH_CODE`；填入后需重新测试 SMTP 接受状态。
 
 也可使用 [配置助手](scripts/configure_github.py) 代填普通字段：先在可访问 GitHub API 的执行环境中配置 `gh` 登录和非敏感变量 `SMTP_USERNAME`，再运行：
 

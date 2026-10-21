@@ -1,0 +1,89 @@
+name: X 公开正文读取检查（非推荐或近期检索）
+
+on:
+  push:
+    paths:
+      - .github/workflows/check-post-access.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  check-public-posts:
+    if: github.ref_name == github.event.repository.default_branch
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        with:
+          python-version: '3.12'
+      - name: 只检查公开正文读取（不是推荐或近期检索，不调用付费 API 或 SMTP）
+        run: |
+          python - <<'PY'
+          from datetime import datetime, timezone
+          import json
+
+          from x_digest.oembed import fetch_verified_posts
+
+          urls = [
+              'https://x.com/karpathy/status/1899887925103648933',
+              'https://x.com/garyblack00/status/2042535553380270355',
+              'https://x.com/hf_status/status/1980189492159054156',
+          ]
+          posts = fetch_verified_posts(urls, now=datetime.now(timezone.utc), limit=3)
+          print(f'::notice::verified_count={len(posts)}')
+          for post in posts:
+              print('::notice::' + json.dumps({
+                  'verified_url': post['url'],
+                  'published_at': post['published_at'],
+                  'text_characters': len(post['text']),
+              }, ensure_ascii=False))
+          if not posts:
+              from http.client import HTTPException
+              import ssl
+              from urllib import error, request
+              from urllib.parse import urlencode
+
+              class NoRedirects(request.HTTPRedirectHandler):
+                  def redirect_request(self, req, fp, code, msg, headers, newurl):
+                      return None
+
+              endpoint = 'https://publish.x.com/oembed?' + urlencode({
+                  'url': urls[0], 'omit_script': 'true', 'hide_thread': 'true',
+              })
+              opener = request.build_opener(
+                  NoRedirects(), request.HTTPSHandler(context=ssl.create_default_context()),
+              )
+              req = request.Request(endpoint, headers={
+                  'Accept': 'application/json', 'User-Agent': 'X-Digest-oEmbed-Check/1.0',
+              })
+              try:
+                  with opener.open(req, timeout=10) as response:
+                      status = response.status
+                      raw = response.read(512 * 1024)
+                  body_is_json = False
+                  has_html = False
+                  try:
+                      body = json.loads(raw)
+                      body_is_json = True
+                      has_html = (isinstance(body, dict) and isinstance(body.get('html'), str)
+                                  and bool(body['html'].strip()))
+                  except (ValueError, UnicodeError, RecursionError):
+                      pass
+                  print('::notice::' + json.dumps({
+                      'diagnostic_http_status': status,
+                      'body_is_json': body_is_json,
+                      'has_html': has_html,
+                  }))
+              except error.HTTPError as exc:
+                  print(f'::notice::diagnostic_http_status={exc.code}')
+                  exc.close()
+              except (error.URLError, OSError, HTTPException):
+                  print('::notice::diagnostic_result=connection_failed')
+              print('::error::public_post_read_check_failed')
+              raise SystemExit(1)
+          PY
