@@ -210,12 +210,14 @@ def _retrieval_payload(model: str, settings: dict, seen_ids: set[str], now: date
     utc_now = now.astimezone(timezone.utc)
     tomorrow = (utc_now + timedelta(days=1)).date().isoformat()
     categories = settings["categories"]
+    classic_categories, classic_count = _classic_configuration(settings, categories=categories)
+    classic_allowed = set(classic_categories) if classic_count else set()
     queries = []
     for category in categories:
         start = utc_now - timedelta(days=3 if category == "学生羊毛" else 7)
         keywords = _SEARCH_KEYWORDS.get(category, category)
-        queries.append(f"site:x.com {keywords} after:{start.date().isoformat()} before:{tomorrow}")
-    classic_categories, classic_count = _classic_configuration(settings, categories=categories)
+        lower_bound = "" if category in classic_allowed else f" after:{start.date().isoformat()}"
+        queries.append(f"site:x.com {keywords}{lower_bound} before:{tomorrow}")
     classic = ""
     if classic_categories and classic_count:
         classic = (

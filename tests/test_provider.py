@@ -230,8 +230,16 @@ class ProviderTests(unittest.TestCase):
         self.assertIn("旧帖不能算近期结果", prompt)
         self.assertIn("学生羊毛仅限72小时且仍有效", prompt)
         self.assertIn("after:2026-10-17 before:2026-10-21", prompt)
+        investment_query = next(line for line in prompt.splitlines() if line.startswith("site:x.com (长期投资"))
+        self.assertNotIn("after:", investment_query)
+        self.assertIn("before:2026-10-21", investment_query)
         ai_prompt = provider._retrieval_payload("configured", dict(settings, categories=["AI"]), set(), NOW)["input"]
         self.assertNotIn("经典例外", ai_prompt)
+        self.assertIn("after:2026-10-13 before:2026-10-21", ai_prompt)
+        disabled = provider._retrieval_payload("configured", dict(settings, categories=["投资"],
+                                                                 classic_categories=[]), set(), NOW)["input"]
+        investment_query = next(line for line in disabled.splitlines() if line.startswith("site:x.com (长期投资"))
+        self.assertIn("after:2026-10-13 before:2026-10-21", investment_query)
 
     def test_retrieval_flag_is_validated_before_network(self):
         with patch.object(provider.request, "build_opener") as build:
