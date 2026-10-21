@@ -51,7 +51,9 @@ class DiscoveryTests(unittest.TestCase):
             response([], [{"type": "url_citation", "url": "https://www.xueqiu.com/123456/654321"},
                           {"type": "text", "url": FAKE}]),
         ])
-        self.assertEqual(result.urls, [REAL, "https://xueqiu.com/123456/654321"])
+        # The mocked HTTP responses are consumed by concurrent workers; their
+        # scheduling order is irrelevant to source provenance and identity.
+        self.assertCountEqual(result.urls, [REAL, "https://xueqiu.com/123456/654321"])
         self.assertNotIn(FAKE, result.urls)
         self.assertEqual(result.diagnostics["search_requests"], 2)
         self.assertEqual(result.diagnostics["searches_completed"], 2)
