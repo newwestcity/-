@@ -4,13 +4,13 @@
 
 ## 当前进度
 
-脚本、邮件模板、发送记录和 GitHub Actions 工作流已写入。Tokeness 的普通 GPT 调用、标准 Responses `web_search`、官方 oEmbed 正文读取和 QQ SMTP 接受测试邮件已在 GitHub 执行机器上实测成功；完整每日投递尚未验证，定时发送保持关闭。
+脚本、邮件模板、发送记录和 GitHub Actions 工作流已写入。Tokeness 的普通 GPT 调用、标准 Responses `web_search`、官方 oEmbed 正文读取曾在 GitHub 执行机器上实测成功；QQ 连接测试已投递且用户确认收到。当前搜索接口出现认证失败，完整每日投递尚未验证，定时发送保持关闭。恢复工作先读 [项目进度记录](PROJECT_STATUS.md)。
 
 已核对的 API 根地址是 `https://n.tokeness.dev/v1`，模型是该密钥目录实际列出的 `gpt-6-luna`。普通对话走 `/chat/completions`，日报搜索走 `/responses`；单次接口检查通过不等于完整日报已投递。
 
 ## 先验证 Tokeness
 
-普通聊天调用与搜索能力分开验证。[普通 API 验证](https://github.com/newwestcity/-/actions/workflows/check-chat.yml)使用已经配置的 `DIGEST_API_KEY`，先读取 `/models`，优先从固定候选中选择目录里实际列出的较小 GPT 型号，再发送一次 `model + 单条 user 消息` 请求，不加搜索工具或其他模型参数。此密钥的 GPT 分组曾拒绝示例中的 GLM 型号，返回 `model_not_configured`。新增或修改该验证工作流时会触发一次，也可手动执行；这会调用模型，可能计费。只有收到非空且正常结束的模型回复才判定成功。它不验证 X 搜索、不发邮件、不启用日程。
+普通聊天调用与搜索能力分开验证。[API 密钥与普通调用检查](https://github.com/newwestcity/-/actions/workflows/check-chat.yml)使用已经配置的 `DIGEST_API_KEY`，默认只读取 `/models`，不调用模型。仅手动勾选 `chat_call` 后，才从目录中选择较小 GPT 型号并发送一次 `model + 单条 user 消息` 请求；这可能计费，不加搜索工具或其他模型参数。此密钥的 GPT 分组曾拒绝示例中的 GLM 型号，返回 `model_not_configured`。模型目录返回成功只证明该路径能认证；普通调用须收到非空且正常结束的回复才通过。它不验证 X 搜索、不发邮件、不启用日程。
 
 `https://n.tokeness.dev/v1` 与 `gpt-6-luna` 的普通对话已[实测成功](https://github.com/newwestcity/-/actions/runs/39462398796)：HTTP 200、非空回复、`finish_reason=stop`。这把密钥的目录列出了 GPT 6 等型号，未列出先前预设的 GPT 4/5 mini 型号。
 
@@ -18,7 +18,7 @@
 
 X 搜索已[实测成功](https://github.com/newwestcity/-/actions/runs/39464437212)：HTTP 200，完整搜索记录，2 条有效 X 原帖来源。[完整日报预览](https://github.com/newwestcity/-/actions/workflows/check-digest-preview.yml)进一步运行实际的六领域搜索、筛选、来源/时效/去重校验与 HTML 渲染，不连接 SMTP；HTML 可从工作流附件下载。
 
-[最近一次完整预览](https://github.com/newwestcity/-/actions/runs/39469686167)取得了15条原帖来源，但全部超过7天窗口，没有生成日报。检索协议可用不代表能稳定找到近期优质帖子；目前仍需解决内容来源问题，不能据此开启定时发送。[公开正文读取检查](https://github.com/newwestcity/-/actions/workflows/check-post-access.yml)只验证已有公开链接的官方 oEmbed 正文，不调用模型、不发邮件，也不证明这些旧帖符合推荐要求。
+[早期完整预览](https://github.com/newwestcity/-/actions/runs/39469686167)取得了15条原帖来源，但全部超过7天窗口。加入经典规则后的[最新完整预览](https://github.com/newwestcity/-/actions/runs/39529399248)在请求阶段失败；随后的[单领域诊断](https://github.com/newwestcity/-/actions/runs/39529662246)返回 HTTP 401。恢复后的[模型目录检查](https://github.com/newwestcity/-/actions/runs/39575507125)也返回401，说明认证问题不限于搜索路径，具体密钥或账户原因仍需确认。检索协议曾可用不代表现在能稳定找到近期优质帖子，不能据此开启定时发送。[公开正文读取检查](https://github.com/newwestcity/-/actions/workflows/check-post-access.yml)已核实3条已有公开链接的官方 oEmbed 正文；它不调用模型、不发邮件，也不证明这些旧帖符合推荐要求。
 
 此步骤在 GitHub 自己的执行机器上运行，与 Codex 开发环境的保存、发布分开。当前 Codex 执行机器仍无法连到 `n.tokeness.dev`，请求被网络代理拒绝；这不能判断 Tokeness 本身或密钥是否正常。
 
@@ -72,7 +72,7 @@ python3 -m x_digest --fetch --send
 - Variables：`SMTP_USERNAME` 必填；`MAIL_TO` 可选，默认发给自己。`DIGEST_API_BASE`、`DIGEST_MODEL` 可选覆盖；工作流已内置成功调用的 Tokeness 地址与 `gpt-6-luna`。这不代表完整日报已验证通过。
 - 开通 QQ 邮箱 SMTP 后，授权码只填入 Secrets。不要写入仓库、聊天或工作流正文。
 
-[邮箱连接测试](https://github.com/newwestcity/-/actions/workflows/check-mail.yml)单独发送一封明确标注的纯文本测试邮件，不调用模型、不启用日报。日志只显示配置是否存在和固定状态，不显示邮箱地址或授权码。[配置后的实际测试](https://github.com/newwestcity/-/actions/runs/39528686309)已返回 `smtp_accepted=true`；这表示 QQ 服务器接受邮件，收件箱是否收到仍需核对。邮箱和公开正文检查现只允许手动执行，后续代码推送不会再次发送测试邮件。
+[邮箱连接测试](https://github.com/newwestcity/-/actions/workflows/check-mail.yml)单独发送一封明确标注的纯文本测试邮件，不调用模型、不启用日报。日志只显示配置是否存在和固定状态，不显示邮箱地址或授权码。[配置后的实际测试](https://github.com/newwestcity/-/actions/runs/39528686309)已返回 `smtp_accepted=true`，用户也已确认收到。邮箱和公开正文检查现只允许手动执行，后续代码推送不会再次发送测试邮件。
 
 也可使用 [配置助手](scripts/configure_github.py) 代填普通字段：先在可访问 GitHub API 的执行环境中配置 `gh` 登录和非敏感变量 `SMTP_USERNAME`，再运行：
 
