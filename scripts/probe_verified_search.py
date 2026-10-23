@@ -1,11 +1,13 @@
 """Two serial, explicitly billed source probes using a catalog-verified route."""
 from datetime import datetime, timedelta, timezone
+from collections import Counter
 import json
 import os
 from pathlib import Path
 import sys
 import time
 from urllib import error, request
+from urllib.parse import urlsplit
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from scripts.check_connection import _request_error_details
@@ -32,6 +34,8 @@ def main():
                 (now - timedelta(days=7)).date().isoformat() + ' before:' + tomorrow),
                ('雪球', 'xueqiu.com', 'site:xueqiu.com 价值投资 企业分析 财报 after:' +
                 (now - timedelta(days=30)).date().isoformat() + ' before:' + tomorrow)]
+    if os.environ.get('PROBE_SOURCE') == 'X':
+        queries = [('X', 'x.com', 'site:x.com inurl:status (value investing OR margin of safety OR book review) before:' + tomorrow)]
     reports = []
     for source, domain, query in queries:
         started = time.monotonic()
@@ -51,6 +55,19 @@ def main():
             data = json.loads(raw)
             records, report['search_status'] = _metadata_records(data)
             report['metadata_records'] = len(records)
+            hosts = Counter()
+            samples = []
+            for record in records[:30]:
+                try:
+                    parts = urlsplit(record.get('url', ''))
+                    if parts.scheme == 'https' and parts.hostname and parts.username is None:
+                        hosts[parts.hostname] += 1
+                        samples.append({'host': parts.hostname, 'path': parts.path[:200],
+                                        'title': _title(record.get('title'))[:100]})
+                except (ValueError, TypeError):
+                    pass
+            report['metadata_hosts'] = dict(hosts)
+            report['metadata_samples'] = samples[:15]
             accepted = {}
             for row in records:
                 try:
@@ -60,7 +77,8 @@ def main():
                     else:
                         url, _, identity = canonical_article_url(row['url'])
                         date = None
-                    accepted[url] = {"url": url, "title": _title(row.get('title'))[:180],
+                    title = _title(row.get('title'))[:180] or accepted.get(url, {}).get('title', '')
+                    accepted[url] = {"url": url, "title": title,
                                      "published_at": date.isoformat() if date else None,
                                      "recent": (now - timedelta(days=7) <= date <= now + timedelta(minutes=5)) if date else None}
                 except (KeyError, ValueError, TypeError, OverflowError, OSError):
