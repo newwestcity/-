@@ -14,7 +14,7 @@ from zoneinfo import ZoneInfo
 
 from .app import ConfigurationError, check_environment, delivery_lock
 from . import editorial, reading_state
-from .discovery import discover_xueqiu
+from .discovery import discover_xueqiu_sources as discover_xueqiu
 from .github_projects import fetch_projects
 from .mail import build_reading_message, send_message
 from .oembed import fetch_verified_posts
@@ -217,7 +217,8 @@ def _daily(settings, seen, now):
         fetched = fetch_articles(snow.urls, now=now) if snow.urls else None
         verified_snow = fetched.articles if fetched else []
         diagnostics["xueqiu_fetch"] = fetched.diagnostics if fetched else {}
-        if (snow.urls and not verified_snow) or (not snow.urls and not snow.diagnostics.get("searches_completed", 0)):
+        if (snow.urls and not verified_snow) or (not snow.urls and not (
+                snow.diagnostics.get("searches_completed", 0) or snow.diagnostics.get("feed_feeds_completed", 0))):
             source_status["雪球"] = "unavailable"
     for source, verified in (("X", verified_x), ("雪球", verified_snow)):
         recent, timeless = prepare_articles(verified, source=source, seen=seen, settings=settings, now=now)

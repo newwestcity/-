@@ -372,6 +372,29 @@ def _grounded_steps(texts, readme):
             raise _invalid_output("ungrounded_command", field)
 
 
+def _quote_options(readme: str) -> list[str]:
+    """Offer small literal source slices so the editor need not recopy prose."""
+    options = []
+    lines = [line.strip() for line in readme.splitlines() if line.strip()]
+    prose = [line for line in lines if not line.startswith(("#", "```", "<", "![", "[!", "|"))]
+    for line in prose:
+        for start in range(0, min(len(line), 640), 160):
+            quote = line[start:start + 160].strip()
+            if len(quote) >= 50 and quote not in options:
+                options.append(quote)
+                if len(options) == 3:
+                    return options
+    # A short README may have only one prose line. Literal fallback slices
+    # remain independently checkable; they never invent an explanatory quote.
+    for start in range(0, min(len(readme), 640), 160):
+        quote = readme[start:start + 160].strip()
+        if len(quote) >= 12 and quote not in options:
+            options.append(quote)
+            if len(options) == 3:
+                break
+    return options
+
+
 def curate_projects(*, base_url: str, api_key: str, model: str, items: list[dict],
                     target_count: int = 10, now: datetime, diagnostics: dict | None = None) -> list[dict]:
     """Choose educational projects from supplied metadata and README excerpts.
@@ -390,7 +413,8 @@ def curate_projects(*, base_url: str, api_key: str, model: str, items: list[dict
     verified = _project_sources(items)
     if not verified:
         return []
-    candidates = [{**metadata, "readme_text": text} for metadata, text in verified.values()]
+    candidates = [{**metadata, "readme_text": text, "evidence_quote_options": _quote_options(text)}
+                  for metadata, text in verified.values()]
     prompt = (
         f"当前时间{now.astimezone(timezone.utc).isoformat()}。最多精选{target_count}个GitHub学习项目。"
         "优先AI应用、自动化、实用工具，语言不限，适合大学生理解、学习或复刻。只依据给定仓库元数据与README摘录；"
@@ -398,8 +422,12 @@ def curate_projects(*, base_url: str, api_key: str, model: str, items: list[dict
         "排除仅资料列表、缺少实际应用与复现说明的宣传项目。学习与复现条件不清可以少选。"
         "未实际安装运行，不得写已成功运行、实测可用；README里的声明仅是作者说明。"
         "不能编造文件路径、命令、配置、许可证、依赖、运行成本；需要API/GPU时指出，未说明则写未注明。"
+        "prerequisites只写资料明确支持的语言、工具、硬件、API条件；不能把猜测的文件名或配置路径当作前置条件。"
         "复现步骤具体但仅为建议，恰好3条，涉及代码文件或反引号命令必须在给定README逐字出现；"
+        "reproduction_steps禁止出现任何URL，包括README命令中的URL；改为指向README的相关章节并说明练习任务。"
         "若没有明确命令，用按README定位入口、核对环境、运行并验证最小示例等具体学习步骤。"
+        "每条evidence_excerpt必须从该项目的evidence_quote_options中原封不动复制一项，"
+        "不能翻译、改写、合并、加省略号或补写引句。"
         "热门指标是候选代理，stars是总数，不是本周涨星；未知周涨星不能编造。"
         "评分为编辑判断：learnability0..30、reproducibility0..30、practicality0..20、popularity0..10、maintenance0..10。"
         "只选总分>=75、learnability>=18、reproducibility>=18。用中文说明能学什么和如何复刻。"

@@ -35,6 +35,14 @@ _SPDX = {"MIT", "Apache-2.0", "BSD-2-Clause", "BSD-3-Clause", "0BSD", "ISC",
 _TOPIC = re.compile(r"\b(ai|llm|agent|rag|mcp|automation|workflow|toolkit|cli|assistant|"
                     r"productivity|utility|utilities|self-hosted|ocr|notebook)\b|"
                     r"人工智能|自动化|实用工具|大模型|智能体|知识管理", re.I)
+_PRACTICAL = re.compile(r"\b(app(?:lication)?s?|tools?|automation|workflows?|cli|assistant|"
+                        r"productivity|utilities|utility|browser|desktop|dashboard|"
+                        r"chatbot|copilot|note[- ]?taking|document[- ]?processing)\b|"
+                        r"应用|工具|自动化|工作流|桌面|浏览器|知识管理", re.I)
+_CORE_INFRA = re.compile(r"\b(?:training|inference|serving)[ -]+(?:engine|framework|runtime|library)|"
+                         r"\b(?:gpu|cuda)[ -]+(?:kernel|runtime)|"
+                         r"\b(?:distributed|model|llm)[ -]+(?:training|inference)|"
+                         r"\bpre[- ]?trained models?\b|训练框架|推理引擎|推理框架", re.I)
 _QUICKSTART = re.compile(r"(?im)^(?:#{1,6}[ \t]*)?[^\w\n<>]{0,8}(?:"
                          r"(?:quick[ \t]*start|getting started|installation|install|usage|setup)\b|"
                          r"快速开始|安装|使用|上手)")
@@ -220,11 +228,22 @@ def _metadata(item: object, *, now: datetime, client: _Client) -> dict | None:
         language = item.get("language")
         if language is not None and not isinstance(language, str):
             raise ValueError
+        # These are metadata hints for allocating the limited README budget,
+        # not assertions about capabilities or whether a project can be run.
+        focus_fields = {"name": name, "description": description, "topics": " ".join(topics)}
+        practical = [field + ": " + match.group(0).casefold()
+                     for field, value in focus_fields.items() for match in _PRACTICAL.finditer(value)][:12]
+        infrastructure = [field + ": " + match.group(0).casefold()
+                          for field, value in focus_fields.items() for match in _CORE_INFRA.finditer(value)][:12]
+        practical_priority = int(bool(practical)) - int(bool(infrastructure))
         return {"id": "github:" + name.casefold(), "url": url, "source": "GitHub", "title": name,
                 "name": name, "author": name.split("/")[0], "description": description[:1000],
                 "language": language, "stars": stars, "forks": forks, "license": spdx,
                 "license_name": str(license_data.get("name") or spdx)[:120],
                 "archived": False, "fork": False, "topics": topics,
+                "practical_project_priority": practical_priority,
+                "metadata_focus": {"basis": "GitHub名称、描述和主题中的关键词；尚需README核对",
+                                   "practical_signals": practical, "infrastructure_signals": infrastructure},
                 "created_at": created.isoformat(), "pushed_at": pushed.isoformat(),
                 "verified_at": now.isoformat(), "weekly_star_growth": None,
                 "popularity_proxy": {"label": "热门候选指标（非本周涨星）", "score": round(score, 2),
@@ -356,7 +375,7 @@ def fetch_projects(*, now: datetime, limit: int = MAX_PROJECTS, token: str | Non
     active = (current - timedelta(days=7)).date().isoformat()
     recent = (current - timedelta(days=90)).date().isoformat()
     common = f"is:public archived:false fork:false pushed:>={active}"
-    searches = [f"topic:llm stars:>=100 {common}",
+    searches = [f"topic:ai-agents stars:>=100 {common}",
                 f"topic:automation stars:>=50 {common}",
                 f"created:>={recent} stars:>=50 {common}"]
     candidates: dict[str, dict] = {}
@@ -378,13 +397,15 @@ def fetch_projects(*, now: datetime, limit: int = MAX_PROJECTS, token: str | Non
                 candidates.setdefault(project["id"], project)
     unseen = [project for project in candidates.values() if project["id"] not in seen]
     client.count("excluded_previously_seen", len(candidates) - len(unseen))
-    ranked = sorted(unseen, key=lambda item: (-item["popularity_proxy"]["score"], item["id"]))
+    ranked = sorted(unseen, key=lambda item: (-item["practical_project_priority"],
+                                             -item["popularity_proxy"]["score"], item["id"]))
     with ThreadPoolExecutor(max_workers=2) as executor:
         projects = [item for item in executor.map(lambda project: _readme(project, client=client), ranked[:limit])
                     if item is not None]
     growth = compute_growth(projects, previous_snapshot, now=current)
     for project in projects:
         project.update(growth[project["id"]])
-    projects.sort(key=lambda item: (-item["learning_readiness_score"], -item["popularity_proxy"]["score"], item["id"]))
+    projects.sort(key=lambda item: (-item["practical_project_priority"], -item["learning_readiness_score"],
+                                    -item["popularity_proxy"]["score"], item["id"]))
     client.count("projects_verified", len(projects))
     return ProjectFetchResult(projects, dict(client.diagnostics))

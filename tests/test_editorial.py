@@ -181,6 +181,12 @@ class EditorialTests(unittest.TestCase):
         candidates = json.loads(payload["messages"][1]["content"].split("\n", 1)[1])
         self.assertEqual(len(candidates[0]["readme_text"]), 5000)
         self.assertEqual(result[0]["readme_characters"], 5000)
+        options = candidates[0]["evidence_quote_options"]
+        self.assertTrue(2 <= len(options) <= 3)
+        for quote in options:
+            self.assertTrue(12 <= len(quote) <= 160)
+            self.assertIn(quote, candidates[0]["readme_text"])
+        self.assertIn("原封不动复制", payload["messages"][1]["content"])
 
     def test_strict_json_rejects_duplicates_truncation_tools_and_extra_fields(self):
         envelopes = [

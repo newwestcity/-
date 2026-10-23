@@ -18,8 +18,18 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
         with:
           python-version: '3.12'
-      - run: python -m unittest tests.test_github_projects tests.test_xueqiu -q
+      - run: python -m unittest tests.test_github_projects tests.test_xueqiu tests.test_search_feed -q
       - name: 官方公开来源试读（不调用模型或SMTP）
         env:
           GH_TOKEN: ${{ github.token }}
         run: python scripts/check_reading_sources.py
+      - name: 保存公开来源报告与标题链接预览
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: reading-source-preview
+          path: |
+            .local/preview/source-report.json
+            .local/preview/snowball-source.html
+          if-no-files-found: ignore
+          retention-days: 7

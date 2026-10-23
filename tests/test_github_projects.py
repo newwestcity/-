@@ -8,7 +8,7 @@ import time
 import unittest
 from unittest.mock import Mock, patch
 from urllib.error import HTTPError
-from urllib.parse import urlsplit
+from urllib.parse import parse_qs, urlsplit
 
 from x_digest import github_projects as github
 
@@ -204,6 +204,36 @@ class GitHubProjectTests(unittest.TestCase):
         self.assertEqual(len(readme_paths), 2)
         self.assertEqual(result.diagnostics["api_requests"], 5)
         self.assertEqual(result.diagnostics["excluded_previously_seen"], 1)
+
+    def test_practical_apps_receive_readme_budget_ahead_of_popular_inference_core(self):
+        repositories = [metadata("Core/llm-engine", stargazers_count=200000,
+                                 description="A GPU LLM inference engine and serving runtime",
+                                 topics=["llm", "inference-engine"]),
+                        metadata("Student/reading-assistant", stargazers_count=120,
+                                 description="An AI desktop application for reading documents and automating notes",
+                                 topics=["ai-agents", "productivity"])]
+        opener = self.service(repositories)
+        with patch.object(github.request, "build_opener", return_value=opener):
+            result = github.fetch_projects(now=NOW, limit=1)
+        self.assertEqual([project["id"] for project in result.projects], ["github:student/reading-assistant"])
+        self.assertEqual(result.projects[0]["stars"], 120)
+        self.assertIsNone(result.projects[0]["weekly_star_growth"])
+        self.assertTrue(result.projects[0]["metadata_focus"]["practical_signals"])
+        requests = [urlsplit(call.args[0].full_url) for call in opener.open.call_args_list]
+        self.assertEqual([item.path for item in requests if item.path.endswith("/readme")],
+                         ["/repos/Student/reading-assistant/readme"])
+        queries = [parse_qs(item.query)["q"][0] for item in requests if item.path == "/search/repositories"]
+        self.assertIn("topic:ai-agents", queries[0])
+        self.assertIn("topic:automation", queries[1])
+        self.assertIn("created:>=", queries[2])
+        # Core frameworks remain candidates when budget permits, with real
+        # metadata and README checks; preference is not an exclusion rule.
+        opener = self.service(repositories)
+        with patch.object(github.request, "build_opener", return_value=opener):
+            result = github.fetch_projects(now=NOW, limit=2)
+        self.assertEqual(result.projects[1]["id"], "github:core/llm-engine")
+        self.assertEqual(result.projects[1]["stars"], 200000)
+        self.assertTrue(result.projects[1]["metadata_focus"]["infrastructure_signals"])
 
     def test_authentication_or_rate_errors_stop_further_requests_without_echo(self):
         for status, label in ((401, "credential_rejected"), (403, "rate_limited_or_forbidden"),
