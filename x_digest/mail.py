@@ -268,6 +268,9 @@ def _coverage_lines(items: list[dict], edition: str, coverage: dict | None) -> l
             line = f"{source}：本期 {count} {'个项目' if edition == 'weekly' else '篇'}，目标 {targets[source]} {'个' if edition == 'weekly' else '篇'}"
         if source in statuses:
             line += "；" + _SOURCE_STATUS_LABELS[statuses[source]]
+        reserve_count = sum(item["source"] == source and item.get("from_reserve") is True for item in items)
+        if reserve_count:
+            line += f"；其中 {reserve_count} 条为此前核验的备用阅读，仍按原帖日期检查时效"
         if count < targets[source]:
             line += "；符合要求的内容不足，宁缺毋滥"
         lines.append(line + "。")

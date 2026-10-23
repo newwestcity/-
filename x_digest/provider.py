@@ -8,12 +8,13 @@ base URL and model. A text-only response is never treated as a completed search.
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from http.client import HTTPException
 import json
 import re
 import ssl
+import time
 from urllib import error, request
 from urllib.parse import urlsplit
 
@@ -42,6 +43,7 @@ class SearchResult:
     posts: list[dict]
     cited_urls: list[str]
     usage: dict
+    diagnostics: dict = field(default_factory=dict)
 
 
 class _NoRedirects(request.HTTPRedirectHandler):
@@ -210,18 +212,17 @@ def _retrieval_payload(model: str, settings: dict, seen_ids: set[str], now: date
     tomorrow = (utc_now + timedelta(days=1)).date().isoformat()
     categories = settings["categories"]
     classic_categories, classic_count = _classic_configuration(settings, categories=categories)
-    classic_allowed = set(classic_categories) if classic_count else set()
     queries = []
     for category in categories:
         start = utc_now - timedelta(days=3 if category == "学生羊毛" else 7)
         keywords = _SEARCH_KEYWORDS.get(category, category)
-        lower_bound = "" if category in classic_allowed else f" after:{start.date().isoformat()}"
-        queries.append(f"site:x.com {keywords}{lower_bound} before:{tomorrow}")
+        queries.append(f"site:x.com {keywords} after:{start.date().isoformat()} before:{tomorrow}")
     classic = ""
     if classic_categories and classic_count:
         classic = (
             "经典例外：" + json.dumps(classic_categories, ensure_ascii=False)
-            + "可另找价值投资原理、长期投资方法或阅读书评的旧帖；"
+            + "仅当近期没有合适内容时，才考虑同一次搜索工具自然返回的价值投资原理、长期投资方法或阅读书评旧帖；"
+            "不得移除query的近期日期下界，不得为经典补位增加搜索调用。"
             "旧行情、旧财报时点判断和过期消息不算经典，旧帖不能算近期结果。\n"
         )
     # The complete history is still enforced after source verification. Keep
@@ -382,9 +383,13 @@ def search(
         }
         description = descriptions.get(exc.code, "搜索接口请求失败")
         raise ProviderError(f"{description}（HTTP {exc.code}）；未自动重试") from None
-    except (OSError, ValueError, TypeError, HTTPException):
+    except (OSError, ValueError, TypeError, HTTPException) as exc:
         # URL errors and HTTP bodies may contain headers, keys or URLs; omit them.
-        raise ProviderError("搜索请求连接失败或超时；未自动重试，请检查网络及服务配置") from None
+        failure = ProviderError("搜索请求连接失败或超时；未自动重试，请检查网络及服务配置")
+        failure.failure_code = ("timeout" if isinstance(exc, TimeoutError) or
+                                (isinstance(exc, error.URLError) and isinstance(exc.reason, TimeoutError))
+                                else "network")
+        raise failure from None
     if len(raw) > MAX_RESPONSE_BYTES:
         raise ProviderError("搜索响应超出大小限制，未解析截断内容")
     try:
@@ -396,6 +401,9 @@ def search(
 
 def _search_failure_code(exc: ProviderError) -> str:
     """Reduce errors to fixed diagnostic labels; never return exception text."""
+    code = getattr(exc, "failure_code", None)
+    if isinstance(code, str) and code in {"timeout", "network"}:
+        return code
     message = str(exc)
     fixed_codes = {
         "检索未返回独立的 X 原帖引用，无法核实候选链接": "no_sources",
@@ -447,23 +455,38 @@ def search_by_category(
                          for category in categories]
     results: list[SearchResult] = []
     failure_counts: dict[str, int] = {}
+    category_results = []
+
+    def search_one(local_settings):
+        started = time.monotonic()
+        result, status = None, "completed"
+        try:
+            result = search(base_url=base_url, api_key=api_key, model=model,
+                            settings=local_settings, seen_ids=seen_ids, now=now, timeout=120,
+                            retrieval_only=True)
+        except ProviderError as exc:
+            status = _search_failure_code(exc)
+        elapsed_ms = max(0, int((time.monotonic() - started) * 1000))
+        return result, {"category": local_settings["categories"][0], "status": status,
+                        "elapsed_ms": elapsed_ms}
+
     with ThreadPoolExecutor(max_workers=2) as executor:
-        pending = [executor.submit(search, base_url=base_url, api_key=api_key, model=model,
-                                   settings=local_settings, seen_ids=seen_ids, now=now, timeout=120,
-                                   retrieval_only=True)
-                   for local_settings in category_settings]
+        pending = [executor.submit(search_one, local_settings) for local_settings in category_settings]
         for future in pending:
-            try:
-                results.append(future.result())
-            except ProviderError as exc:
-                code = _search_failure_code(exc)
+            result, observation = future.result()
+            category_results.append(observation)
+            if observation["status"] == "completed":
+                results.append(result)
+            else:
+                code = observation["status"]
                 failure_counts[code] = failure_counts.get(code, 0) + 1
-                # Only fixed diagnostic codes are retained, never category names
-                # or exception text, which might originate from an unknown relay.
-                continue
+    diagnostics = {"categories_total": len(categories), "categories_succeeded": len(results),
+                   "failures": failure_counts, "category_results": category_results}
     if not results:
         diagnostic = json.dumps(failure_counts, sort_keys=True, separators=(",", ":"))
-        raise ProviderError("所有分类检索均未成功；未自动重试；诊断=" + diagnostic)
+        exc = ProviderError("所有分类检索均未成功；未自动重试；诊断=" + diagnostic)
+        exc.diagnostics = diagnostics
+        raise exc
     posts: list[dict] = []
     cited_urls: list[str] = []
     usage = {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
@@ -476,7 +499,7 @@ def search_by_category(
             value = result.usage.get(field)
             if type(value) is int and value >= 0:
                 usage[field] += value
-    return SearchResult(posts, cited_urls, usage)
+    return SearchResult(posts, cited_urls, usage, diagnostics)
 
 
 def curate_verified_posts(

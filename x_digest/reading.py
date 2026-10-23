@@ -6,6 +6,7 @@ from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from email.utils import format_datetime, make_msgid
+from html import escape
 import json
 import os
 from pathlib import Path
@@ -91,7 +92,7 @@ def select_reading(items, *, settings, now):
     counts, authors, categories = Counter(), Counter(), Counter()
     selected, used, exceptions, undated = [], set(), 0, 0
     # Fill recent material first; classics/unknown dates can never displace it.
-    ordered = sorted(items, key=lambda p: (p.get("reading_kind") != "recent",
+    ordered = sorted(items, key=lambda p: (p.get("reading_kind") != "recent", p.get("from_reserve", False),
                      not p.get("is_long_read", False), -p.get("score_total", 0), p["id"]))
     # Round-robin categories within each source prevents the largest search from
     # occupying the whole edition. Subsequent rounds fill available capacity.
@@ -139,7 +140,7 @@ def select_reading(items, *, settings, now):
     return selected
 
 
-def add_xueqiu_links(items, *, candidates, outcomes, seen, settings):
+def add_xueqiu_links(items, *, candidates, outcomes, seen, settings, candidate_limit=None):
     """User-approved title/link fallback; never imply a full-article assessment."""
     if not settings["reading"].get("xueqiu_link_fallback", False):
         return items
@@ -147,7 +148,7 @@ def add_xueqiu_links(items, *, candidates, outcomes, seen, settings):
     authors = {item.get("author_id") for item in items if item["source"] == "雪球"}
     # Metadata-only links are a separately labelled discovery list, not
     # reviewed classic articles. They must not consume the three-classic cap.
-    slots = settings["reading"]["xueqiu_target"] - sum(p["source"] == "雪球" for p in items)
+    slots = (candidate_limit or settings["reading"]["xueqiu_target"]) - sum(p["source"] == "雪球" for p in items)
     result = list(items)
     finance = re.compile(r"投资|价值|估值|财报|财务|经营|企业|公司|行业|现金流|盈利|资产|风险|金融|银行|保险|股息|"
                          r"invest|valuation|financial|business|cash.flow", re.I)
@@ -186,28 +187,34 @@ def _daily(settings, seen, now):
                                   seen_ids={v[2:] for v in seen if v.startswith("x:")}, now=now)
         snow_future = executor.submit(discover_xueqiu, **credentials, now=now, seen_ids=seen)
         try:
-            urls = x_future.result().cited_urls
+            search_result = x_future.result()
+            urls = search_result.cited_urls
+            diagnostics["x_search"] = getattr(search_result, "diagnostics", {})
             diagnostics["x_discovered"] = len(urls)
             # Date/blocked/seen filters also run before downloading excerpt bodies.
             from .app import _source_inventory
             _, inventory, audit = _source_inventory(urls, seen_ids={v[2:] for v in seen if v.startswith("x:")},
                                                    settings=settings, now=now)
             diagnostics.update(inventory)
+            diagnostics["x_source_inventory"] = audit[:100]
             eligible = [row["url"] for row in audit if row["status"] in
                         ({"recent", "old"} if settings["max_classic_count"] else {"recent"})]
             # Recent sources get the bounded reader's slots first.
             eligible.sort(key=lambda url: next(row["status"] != "recent" for row in audit if row["url"] == url))
             verified_x = fetch_verified_posts(eligible, now=now, limit=20) if eligible else []
             diagnostics["x_verified"] = len(verified_x)
+            diagnostics["x_verified_candidates"] = [{"id": item["id"], "published_at": item.get("published_at"),
+                "text_characters": len(" ".join(item.get("text", "").split()))} for item in verified_x]
         except ProviderError as error:
             verified_x = []
             source_status["X"] = "unavailable"
             diagnostics["x_search_failed"] = 1
+            diagnostics["x_search"] = getattr(error, "diagnostics", {})
             # search_by_category emits only fixed aggregate labels here. Keep
             # those counts for diagnosis without copying an exception message.
             try:
                 failures = json.loads(str(error).partition("诊断=")[2])
-                allowed = {"no_sources", "not_json", "incomplete", "no_tool", "invalid_posts", "network", "other",
+                allowed = {"no_sources", "not_json", "incomplete", "no_tool", "invalid_posts", "network", "timeout", "other",
                            "HTTP400", "HTTP401", "HTTP403", "HTTP404", "HTTP408", "HTTP422", "HTTP429",
                            "HTTP500", "HTTP502", "HTTP503", "HTTP504"}
                 if (isinstance(failures, dict) and set(failures) <= allowed
@@ -254,6 +261,11 @@ def _daily(settings, seen, now):
     selected = select_reading(candidates, settings=settings, now=now)
     selected = add_xueqiu_links(selected, candidates=getattr(snow, "candidates", []),
                                outcomes=getattr(fetched, "outcomes", {}), seen=seen, settings=settings)
+    # Internal candidate hand-off. run_reading removes this before persisting
+    # the public diagnostic report. Surplus vetted material can survive a
+    # temporary search outage on a later run.
+    diagnostics["_reserve_items"] = candidates + add_xueqiu_links([], candidates=getattr(snow, "candidates", []),
+        outcomes=getattr(fetched, "outcomes", {}), seen=seen, settings=settings, candidate_limit=12)
     counts = Counter(p["source"] for p in selected)
     targets = {"X": settings["target_count"], "雪球": settings["reading"]["xueqiu_target"]}
     for source, count in counts.items():
@@ -263,6 +275,26 @@ def _daily(settings, seen, now):
         source_status["雪球"] = "links_only" if all(p.get("reading_kind") == "link_candidate"
                                                    for p in selected if p["source"] == "雪球") else "partial"
     return selected, {"targets": targets, "source_status": source_status}, diagnostics
+
+
+def merge_reserve(current, stored, *, settings, now):
+    """Fill source quotas from already-vetted, freshly revalidated snapshots."""
+    pool = list(current)
+    used = {item["id"] for item in pool}
+    pool.extend({**item, "from_reserve": True} for item in stored if item["id"] not in used)
+    selected = select_reading([item for item in pool if item.get("reading_kind") != "link_candidate"],
+                              settings=settings, now=now)
+    used = {item["id"] for item in selected}
+    authors = {item.get("author_id") for item in selected if item["source"] == "雪球"}
+    for item in pool:
+        if (item.get("reading_kind") != "link_candidate" or item["id"] in used
+                or item.get("author_id") in authors
+                or sum(value["source"] == "雪球" for value in selected) >= settings["reading"]["xueqiu_target"]):
+            continue
+        selected.append(item)
+        used.add(item["id"])
+        authors.add(item.get("author_id"))
+    return selected, pool
 
 
 def _weekly(settings, seen, now):
@@ -347,11 +379,46 @@ def run_reading(settings: dict, *, work_dir: Path, send: bool, edition="daily", 
         if ledger:
             seen |= ledger.pending_ids(today=now.date(), history_days=settings["reading"]["history_days"])
         items, coverage, diagnostics = (_daily if edition == "daily" else _weekly)(settings, seen, now)
+        if edition == "daily":
+            from .reading_reserve import load_reserve, save_reserve
+            stored, reserve_diagnostics = load_reserve(work_dir / "reading-reserve.json", settings=settings,
+                                                       seen=seen, now=now)
+            fresh_pool = diagnostics.pop("_reserve_items", items)
+            items, reserve_pool = merge_reserve(fresh_pool, stored, settings=settings, now=now)
+            reserve_diagnostics["used"] = sum(item.get("from_reserve", False) for item in items)
+            try:
+                save_reserve(work_dir / "reading-reserve.json", reserve_pool, now=now)
+            except (OSError, ValueError):
+                reserve_diagnostics["save_failed"] = 1
+            diagnostics["reserve"] = reserve_diagnostics
+            for source, target in coverage["targets"].items():
+                chosen = [item for item in items if item["source"] == source]
+                if chosen:
+                    coverage["source_status"][source] = ("links_only" if all(
+                        item.get("reading_kind") == "link_candidate" for item in chosen) else
+                        ("available" if len(chosen) >= target else "partial"))
         (work_dir / "reading-audit.json").write_text(json.dumps({"edition": edition, "coverage": coverage,
             "diagnostics": diagnostics}, ensure_ascii=False, indent=2), encoding="utf-8")
         if not items:
-            raise ConfigurationError("本期没有通过原文与质量检查的阅读材料；未发空邮件。诊断="
-                                     + json.dumps(diagnostics, separators=(",", ":")))
+            report = {"status": "no_material", "edition": edition, "date": date, "count": 0,
+                      "source_counts": {}, "coverage": coverage, "mail_sent": False}
+            (work_dir / "status-report.json").write_text(json.dumps(report, ensure_ascii=False, indent=2),
+                                                        encoding="utf-8")
+            preview = work_dir / "preview"
+            preview.mkdir(exist_ok=True)
+            (preview / "digest.html").unlink(missing_ok=True)
+            (preview / "digest.json").unlink(missing_ok=True)
+            labels = {"unavailable": "来源暂不可用", "no_candidates": "尚未找到候选",
+                      "no_qualified": "尚无通过筛选的内容"}
+            sources = "".join("<li>" + escape(source) + "：" + escape(labels.get(status, status)) + "</li>"
+                              for source, status in coverage["source_status"].items())
+            (preview / "status.html").write_text(
+                '<!doctype html><html lang="zh-CN"><meta charset="utf-8"><title>阅读任务状态</title>'
+                '<h1>本期暂未取得合格材料</h1><p>尚未发送邮件，后续补跑仍可继续。</p><ul>'
+                + sources + '</ul></html>', encoding="utf-8")
+            return report
+        (work_dir / "status-report.json").unlink(missing_ok=True)
+        (work_dir / "preview/status.html").unlink(missing_ok=True)
         sender = os.environ["SMTP_USERNAME"]
         message = build_reading_message(items, edition=edition, date=date, sender=sender,
                                         recipient=os.environ.get("MAIL_TO") or sender, coverage=coverage)

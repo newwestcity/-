@@ -2,6 +2,7 @@ from datetime import datetime, timezone
 from http.client import IncompleteRead
 import io
 import json
+import socket
 import ssl
 from threading import Barrier, Lock
 import unittest
@@ -55,6 +56,24 @@ class ProviderTests(unittest.TestCase):
         self.assertEqual(len(result.posts), 2)
         self.assertNotIn(INVENTED_URL, result.cited_urls)
         self.assertEqual(result.usage, {"total_tokens": 123})
+
+    def test_timeout_and_dns_errors_have_distinct_fixed_codes_without_remote_text(self):
+        cases = [(TimeoutError(SECRET), "timeout"),
+                 (error.URLError(TimeoutError(SECRET)), "timeout"),
+                 (error.URLError(socket.gaierror(-2, SECRET)), "network"),
+                 (OSError(SECRET), "network")]
+        for fault, expected in cases:
+            opener = Mock()
+            opener.open.side_effect = fault
+            with self.subTest(expected=expected, fault=type(fault).__name__):
+                with self.assertRaises(provider.ProviderError) as raised:
+                    self.call(opener=opener)
+                self.assertEqual(str(raised.exception),
+                                 "搜索请求连接失败或超时；未自动重试，请检查网络及服务配置")
+                self.assertEqual(raised.exception.failure_code, expected)
+                self.assertEqual(provider._search_failure_code(raised.exception), expected)
+                self.assertNotIn(SECRET, str(raised.exception))
+                self.assertEqual(opener.open.call_count, 1)
 
     def test_annotations_provide_sources_but_still_need_completed_search(self):
         data = response_data()
@@ -231,8 +250,10 @@ class ProviderTests(unittest.TestCase):
         self.assertIn("学生羊毛仅限72小时且仍有效", prompt)
         self.assertIn("after:2026-10-17 before:2026-10-21", prompt)
         investment_query = next(line for line in prompt.splitlines() if line.startswith("site:x.com (长期投资"))
-        self.assertNotIn("after:", investment_query)
-        self.assertIn("before:2026-10-21", investment_query)
+        self.assertIn("after:2026-10-13 before:2026-10-21", investment_query)
+        self.assertIn("仅当近期没有合适内容时", prompt)
+        self.assertIn("不得为经典补位增加搜索调用", prompt)
+        self.assertNotIn("可另找", prompt)
         ai_prompt = provider._retrieval_payload("configured", dict(settings, categories=["AI"]), set(), NOW)["input"]
         self.assertNotIn("经典例外", ai_prompt)
         self.assertIn("after:2026-10-13 before:2026-10-21", ai_prompt)
@@ -350,6 +371,12 @@ class CategorySearchTests(unittest.TestCase):
                                              for index in range(len(categories))])
         self.assertEqual(len(result.cited_urls), len(categories))
         self.assertEqual(result.usage, {"input_tokens": 6, "output_tokens": 12, "total_tokens": 18})
+        self.assertEqual(result.diagnostics["categories_total"], 6)
+        self.assertEqual(result.diagnostics["categories_succeeded"], 6)
+        self.assertEqual(result.diagnostics["failures"], {})
+        self.assertEqual([row["category"] for row in result.diagnostics["category_results"]], categories)
+        self.assertTrue(all(row["status"] == "completed" and type(row["elapsed_ms"]) is int
+                            and row["elapsed_ms"] >= 0 for row in result.diagnostics["category_results"]))
         self.assertEqual(settings, original)
         for _, payload, timeout in calls:
             self.assertEqual(timeout, 120)
@@ -371,8 +398,43 @@ class CategorySearchTests(unittest.TestCase):
         self.assertEqual(result.posts, [{"category": "AI"}])
         self.assertEqual(result.cited_urls, [REAL_URL])
         self.assertEqual(result.usage, {"input_tokens": 0, "output_tokens": 0, "total_tokens": 5})
+        self.assertEqual(result.diagnostics["categories_total"], 2)
+        self.assertEqual(result.diagnostics["categories_succeeded"], 1)
+        self.assertEqual(result.diagnostics["failures"], {"other": 1})
+        self.assertEqual([(row["category"], row["status"]) for row in result.diagnostics["category_results"]],
+                         [("AI", "completed"), ("读书", "other")])
         self.assertNotIn(SECRET, repr(result))
         output.assert_not_called()
+
+    def test_partial_transport_failures_preserve_timeout_and_network_diagnostics(self):
+        categories = ["AI", "读书", "投资", "科技"]
+        faults = {"读书": TimeoutError(SECRET),
+                  "投资": error.URLError(TimeoutError(SECRET)),
+                  "科技": error.URLError(socket.gaierror(-2, SECRET))}
+        def respond(req, *, timeout):
+            prompt = json.loads(req.data)["input"]
+            category = next(category for category in categories
+                            if "分类：" + json.dumps([category], ensure_ascii=False) + "\n" in prompt)
+            if category in faults:
+                raise faults[category]
+            return io.BytesIO(json.dumps(response_data()).encode())
+        opener = Mock()
+        opener.open.side_effect = respond
+        with patch.object(provider.request, "build_opener", return_value=opener):
+            result = self.call(dict(SETTINGS, categories=categories))
+        self.assertEqual(opener.open.call_count, 4)
+        self.assertEqual(result.cited_urls, [REAL_URL])
+        self.assertEqual(result.diagnostics["categories_succeeded"], 1)
+        self.assertEqual(result.diagnostics["failures"], {"timeout": 2, "network": 1})
+        self.assertEqual([row["status"] for row in result.diagnostics["category_results"]],
+                         ["completed", "timeout", "timeout", "network"])
+        self.assertNotIn(SECRET, json.dumps(result.diagnostics))
+
+    def test_failure_code_attributes_are_limited_to_known_transport_codes(self):
+        for code in (SECRET, "HTTP429", ["timeout"], None):
+            fault = provider.ProviderError(SECRET)
+            fault.failure_code = code
+            self.assertEqual(provider._search_failure_code(fault), "other")
 
     def test_all_category_failures_raise_only_fixed_error_without_retry(self):
         with patch.object(provider, "search", side_effect=provider.ProviderError(SECRET)) as run:
@@ -382,6 +444,25 @@ class CategorySearchTests(unittest.TestCase):
         self.assertNotIn(SECRET, str(raised.exception))
         self.assertIn("所有分类", str(raised.exception))
         self.assertEqual(json.loads(str(raised.exception).split("；诊断=", 1)[1]), {"other": 2})
+        self.assertEqual(raised.exception.diagnostics["categories_succeeded"], 0)
+        self.assertEqual(raised.exception.diagnostics["categories_total"], 2)
+        self.assertEqual(raised.exception.diagnostics["failures"], {"other": 2})
+        self.assertNotIn(SECRET, json.dumps(raised.exception.diagnostics))
+
+    def test_category_duration_covers_request_execution_without_retries(self):
+        value = provider.SearchResult([], [REAL_URL], {})
+        with patch.object(provider, "search", return_value=value) as run, \
+             patch.object(provider.time, "monotonic", side_effect=[10.0, 10.125]):
+            result = self.call(dict(SETTINGS, categories=["AI"]))
+        self.assertEqual(run.call_count, 1)
+        self.assertEqual(result.diagnostics["category_results"],
+                         [{"category": "AI", "status": "completed", "elapsed_ms": 125}])
+
+    def test_three_argument_search_results_keep_independent_default_diagnostics(self):
+        first = provider.SearchResult([], [], {})
+        second = provider.SearchResult([], [], {})
+        first.diagnostics["local_only"] = 1
+        self.assertEqual(second.diagnostics, {})
 
     def test_all_failures_include_only_fixed_diagnostic_code_counts(self):
         failures = [

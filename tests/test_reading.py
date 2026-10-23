@@ -186,6 +186,47 @@ class ReadingTests(unittest.TestCase):
         self.assertEqual(daily.call_count, 2)
         self.assertEqual(self.send.call_count, 1)
 
+    def test_search_outage_sends_valid_unseen_reserve_but_never_promotes_expired_news(self):
+        from x_digest.reading_reserve import save_reserve
+        def reviewed(number, age=1):
+            item = article("X", number, age=age, category="AI")
+            item.update(content_basis="excerpt", content_form="long_post", text_characters=1200,
+                        estimated_read_minutes=5, evidence_excerpt="这是具有十二个以上字符的合成原文引句。",
+                        scores={"depth": 28, "evidence": 22, "learning": 22, "readability": 9, "timeliness": 9})
+            return item
+        valid, expired = reviewed(1), reviewed(2, age=8)
+        save_reserve(self.work / "reading-reserve.json", [valid, expired], now=NOW)
+        with patch("x_digest.reading.search_by_category", side_effect=ProviderError("synthetic temporary outage")), \
+             patch("x_digest.reading.discover_xueqiu", return_value=SimpleNamespace(
+                 urls=[], candidates=[], diagnostics={"searches_completed": 0, "http_500": 2})), \
+             patch("x_digest.reading.editorial.curate_articles") as edit:
+            result = self.run_edition(send=True)
+        self.assertEqual(result["status"], "smtp_accepted")
+        self.assertEqual(result["count"], 1)
+        self.assertEqual(self.build.call_args.args[0][0]["id"], valid["id"])
+        self.assertTrue(self.build.call_args.args[0][0]["from_reserve"])
+        saved = reading_state.load_state(self.work / "reading-state.json")
+        self.assertEqual(reading_state.seen_ids(saved, today=NOW.date()), {valid["id"]})
+        audit = json.loads((self.work / "reading-audit.json").read_text())
+        self.assertEqual(audit["diagnostics"]["reserve"]["used"], 1)
+        self.assertEqual(audit["diagnostics"]["reserve"]["items_expired"], 1)
+        edit.assert_not_called()
+        self.send.assert_called_once()
+
+    def test_no_material_preserves_retry_eligibility_and_clears_stale_preview(self):
+        self.work.joinpath("preview").mkdir()
+        self.work.joinpath("preview/digest.html").write_text("old preview")
+        with patch("x_digest.reading._daily", return_value=edition_result([])):
+            result = self.run_edition(send=True)
+        self.assertEqual(result["status"], "no_material")
+        self.assertFalse(self.work.joinpath("preview/digest.html").exists())
+        self.assertFalse(self.work.joinpath("reading-state.json").exists())
+        with patch("x_digest.reading._daily", return_value=edition_result([article()])):
+            self.assertEqual(self.run_edition(send=True)["status"], "smtp_accepted")
+        self.assertFalse(self.work.joinpath("preview/status.html").exists())
+        self.assertFalse(self.work.joinpath("status-report.json").exists())
+        self.send.assert_called_once()
+
     def test_invalid_mail_configuration_stops_before_collectors_and_editors(self):
         for update in [{"MAIL_TO": "not-a-mailbox"}, {"SMTP_USERNAME": "reader@qq.com\r\nBcc: other@test.com"},
                        {"SMTP_AUTH_CODE": ""}]:
@@ -222,7 +263,7 @@ class ReadingTests(unittest.TestCase):
         self.send.assert_not_called()
 
     def test_sunday_daily_and_weekly_send_independently_but_weekly_only_once_per_iso_week(self):
-        with patch("x_digest.reading._daily", return_value=edition_result([article()])) as daily, \
+        with patch("x_digest.reading._daily", return_value=edition_result([article(age=3)])) as daily, \
              patch("x_digest.reading._weekly", return_value=edition_result([project()])) as weekly:
             first = self.run_edition(send=True, now=SUNDAY)
             second = self.run_edition(send=True, edition="weekly", now=SUNDAY)
@@ -294,8 +335,11 @@ class ReadingTests(unittest.TestCase):
                  urls=[snow["url"]], diagnostics={"searches_succeeded": 1})), \
              patch("x_digest.reading.fetch_articles", return_value=SimpleNamespace(articles=[snow], diagnostics={})), \
              patch("x_digest.reading.editorial.curate_articles", return_value=[]) as edit:
-            with self.assertRaisesRegex(ConfigurationError, "没有通过"):
-                self.run_edition(send=True)
+            result = self.run_edition(send=True)
+        self.assertEqual(result["status"], "no_material")
+        self.assertFalse(result["mail_sent"])
+        self.assertTrue((self.work / "status-report.json").exists())
+        self.assertTrue((self.work / "preview/status.html").exists())
         self.assertEqual(edit.call_count, 2)
         self.build.assert_not_called()
         self.send.assert_not_called()
@@ -377,8 +421,7 @@ class ReadingTests(unittest.TestCase):
                  projects=candidates, diagnostics={"searches_succeeded": 1})), \
              patch("x_digest.reading.editorial.curate_projects", side_effect=EditorialError(
                  "synthetic private transport details", code="timeout")) as edit:
-            with self.assertRaises(ConfigurationError):
-                self.run_edition(edition="weekly")
+            self.assertEqual(self.run_edition(edition="weekly")["status"], "no_material")
         self.assertEqual(edit.call_count, 2)
         audit_text = (self.work / "reading-audit.json").read_text()
         audit = json.loads(audit_text)

@@ -31,7 +31,8 @@ EDITORIAL_ERROR_CODES = frozenset({
 })
 EDITORIAL_ERROR_FIELDS = frozenset({"id", "items", "title", "summary", "reason", "learning_points",
     "scores", "evidence_excerpt", "reproduction_steps", "difficulty", "prerequisites", "effort_estimate"})
-EDITORIAL_DIAGNOSTIC_KEYS = frozenset({"items_received", "items_invalid", "items_below_threshold",
+EDITORIAL_DIAGNOSTIC_KEYS = frozenset({"input_count", "body_too_short", "editor_input_count", "editor_empty",
+    "below_threshold", "items_received", "items_invalid", "items_below_threshold",
     "items_accepted", "items_selected"} | {"invalid_" + code for code in EDITORIAL_ERROR_CODES}
     | {"invalid_" + code + "_" + field for code in EDITORIAL_ERROR_CODES for field in EDITORIAL_ERROR_FIELDS})
 _ARTICLE_SCORES = {"depth": 30, "evidence": 25, "learning": 25, "readability": 10, "timeliness": 10}
@@ -195,8 +196,12 @@ def _evidence(value, text):
     return quote[:180].rstrip()
 
 
-def _article_sources(items, source):
+def _article_sources(items, source, diagnostics=None):
     verified = {}
+    if diagnostics is not None:
+        diagnostics["input_count"] = diagnostics.get("input_count", 0) + len(items)
+        diagnostics.setdefault("body_too_short", 0)
+        diagnostics.setdefault("editor_input_count", 0)
     for item in items[:20]:
         try:
             if not isinstance(item, dict):
@@ -227,6 +232,8 @@ def _article_sources(items, source):
             checked = _date(item.get("verified_at"))
             body = body[:10000]
             if len(_normalized(body)) < (240 if source == "X" else 600):
+                if diagnostics is not None:
+                    diagnostics["body_too_short"] += 1
                 continue
             # Only collector-supplied metadata survives; the model cannot create it.
             public = {key: value for key, value in item.items() if key not in {"text", "title"}}
@@ -236,6 +243,8 @@ def _article_sources(items, source):
             verified[item_id] = (public, body)
         except (ValueError, TypeError, OverflowError):
             raise EditorialError("已核实文章数据无效或身份不一致；未发起编辑请求", code="invalid_input") from None
+    if diagnostics is not None:
+        diagnostics["editor_input_count"] += len(verified)
     return verified
 
 
@@ -258,6 +267,8 @@ def curate_articles(*, base_url: str, api_key: str, model: str, items: list[dict
                    for key, value in diagnostics.items())):
         raise EditorialError("编辑诊断配置无效；未发起编辑请求", code="invalid_configuration")
     counters = diagnostics if diagnostics is not None else {}
+    counters.setdefault("editor_empty", 0)
+    counters.setdefault("below_threshold", 0)
     def count(key):
         counters[key] = counters.get(key, 0) + 1
     categories = allowed_categories
@@ -267,7 +278,7 @@ def curate_articles(*, base_url: str, api_key: str, model: str, items: list[dict
         target_count = min(target_count, 3)
         if not categories:
             return []
-    verified = _article_sources(items, source)
+    verified = _article_sources(items, source, diagnostics=counters)
     if not verified:
         return []
     candidates = [{"id": key, "author": value[0]["author"], "source_title": value[0]["source_title"], "text": value[1],
@@ -298,6 +309,8 @@ def curate_articles(*, base_url: str, api_key: str, model: str, items: list[dict
         + json.dumps(candidates, ensure_ascii=False)
     )
     output = _chat(endpoint=endpoint, api_key=api_key, model=model, prompt=prompt, target=target_count)
+    if not output:
+        count("editor_empty")
     result, selected, first_error, valid_count = [], set(), None, 0
     for value in output:
         count("items_received")
@@ -333,6 +346,7 @@ def curate_articles(*, base_url: str, api_key: str, model: str, items: list[dict
         selected.add(item_id)
         if total < 75 or scores["depth"] < 18 or scores["learning"] < 15:
             count("items_below_threshold")
+            count("below_threshold")
             continue
         count("items_accepted")
         excerpt = (source == "X" or "excerpt" in public["content_basis"]

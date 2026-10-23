@@ -148,6 +148,54 @@ class EditorialTests(unittest.TestCase):
                                       items=[candidate], allowed_categories=["投资"], target_count=1, now=NOW, source="X")
         build.assert_not_called()
 
+    def test_article_input_diagnostics_distinguish_short_bodies_from_editor_empty(self):
+        short = article()
+        short["text"] = "不够支持文章评审的短开头。"
+        diagnostics = {}
+        result, opener, _ = self.call(items=[short], diagnostics=diagnostics)
+        self.assertEqual(result, [])
+        opener.open.assert_not_called()
+        self.assertEqual(diagnostics["input_count"], 1)
+        self.assertEqual(diagnostics["body_too_short"], 1)
+        self.assertEqual(diagnostics["editor_input_count"], 0)
+        self.assertEqual(diagnostics["editor_empty"], 0)
+        self.assertEqual(diagnostics["below_threshold"], 0)
+
+        diagnostics = {}
+        result, opener, _ = self.call([], diagnostics=diagnostics)
+        self.assertEqual(result, [])
+        self.assertEqual(opener.open.call_count, 1)
+        self.assertEqual(diagnostics["input_count"], 1)
+        self.assertEqual(diagnostics["body_too_short"], 0)
+        self.assertEqual(diagnostics["editor_input_count"], 1)
+        self.assertEqual(diagnostics["editor_empty"], 1)
+        self.assertEqual(diagnostics["below_threshold"], 0)
+
+    def test_article_source_diagnostics_keep_valid_input_and_public_text_length(self):
+        short = {**article(), "id": "98765", "url": "https://x.com/reader/status/98765", "text": "短帖"}
+        diagnostics = {}
+        result, _, _ = self.call(items=[short, article()], diagnostics=diagnostics)
+        self.assertEqual(len(result), 1)
+        self.assertEqual(diagnostics["input_count"], 2)
+        self.assertEqual(diagnostics["body_too_short"], 1)
+        self.assertEqual(diagnostics["editor_input_count"], 1)
+        self.assertEqual(result[0]["text_characters"], len(article()["text"]))
+        self.assertEqual(result[0]["evidence_excerpt"], QUOTE)
+        self.assertTrue(set(diagnostics) <= editorial.EDITORIAL_DIAGNOSTIC_KEYS)
+
+    def test_article_diagnostics_do_not_relax_source_identity_validation(self):
+        invalid = {**article(), "author": "forged"}
+        diagnostics = {}
+        with patch.object(editorial.request, "build_opener") as opener:
+            with self.assertRaises(editorial.EditorialError) as caught:
+                editorial.curate_articles(base_url="https://relay.example/v1", api_key=SECRET,
+                    model="chat-model", items=[invalid], target_count=10, now=NOW, source="X",
+                    allowed_categories=["投资"], diagnostics=diagnostics)
+        opener.assert_not_called()
+        self.assertEqual(caught.exception.code, "invalid_input")
+        self.assertEqual(diagnostics["input_count"], 1)
+        self.assertEqual(diagnostics["editor_input_count"], 0)
+
     def test_project_keeps_observations_and_explicitly_has_not_run(self):
         result, opener, _ = self.call(projects=True)
         value = result[0]
@@ -287,6 +335,7 @@ class EditorialTests(unittest.TestCase):
         self.assertEqual(result, [])
         self.assertEqual(diagnostics["items_invalid"], 1)
         self.assertEqual(diagnostics["items_below_threshold"], 1)
+        self.assertEqual(diagnostics["below_threshold"], 1)
         self.assertEqual(diagnostics["items_selected"], 0)
 
     def test_article_diagnostics_configuration_is_checked_before_request(self):
