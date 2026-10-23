@@ -4,7 +4,7 @@
 
 X优先科技、AI、金融的长帖、深入讨论和实践教程，也保留读书、大学生权益。雪球侧重价值投资、企业经营、财务与估值、行业研究和风险管理，不选K线、短线喊单或带单。GitHub优先 **AI应用、自动化、实用工具，语言不限**，要求有实际代码、明确许可证和快速开始说明。
 
-原有可回退版本为 **`v0.1.0-demo`**，升级示范版保存为 **`v0.2.0-demo`**。2026-10-23的2条雪球链接示范已被QQ服务器接受；GitHub周刊已有5项实际预览，目标10。X仍受Tokeness渠道暂不可用影响。最新实测和恢复入口见 [PROJECT_STATUS.md](PROJECT_STATUS.md)。既有API密钥、QQ SMTP已经配置成功，升级不需要重新填写。
+2026-10-23已修复搜索与普通编辑共用错误模型的问题：[完整日刊预览](https://github.com/newwestcity/-/actions/runs/39980910253)生成3条新的雪球标题链接，[修复验收邮件](https://github.com/newwestcity/-/actions/runs/39982826451)已被QQ SMTP接受。X近期合格原帖仍不足，尚未通过持续每日出刊验收；GitHub周刊已有5项实际预览，目标10。最新实测和恢复入口见 [PROJECT_STATUS.md](PROJECT_STATUS.md)。既有API密钥、QQ SMTP继续使用，无需重新填写。
 
 ## 筛选依据
 
@@ -45,6 +45,8 @@ python -m x_digest --fetch --edition weekly --send # 实际发送周刊
 
 每次日报最多6次X来源搜索＋2次雪球来源搜索，最多20条X摘录和12篇雪球原文，至多4次普通编辑调用。每个领域至多一次API搜索请求，最多1500输出token，无自动重试。中转站不接受`max_tool_calls`，因此该配置只限制本地请求预算，不能硬限制服务端内部搜索次数。周刊最多3次GitHub API搜索＋20次README读取＋2次模型编辑（每批5个，最多并行2批），不运行候选代码。只在原文核验后调用编辑；失败的来源不阻断其他有效来源。X各分类即使部分成功也保留失败码和耗时；正文过短、编辑选空、评分不足分别计数。预览和发送分别执行会分别产生调用；工具和token限制不是金额上限。
 
+X与雪球的联网搜索共享1个并发名额，普通编辑调用独立运行。日刊与完整预览任务最长35分钟，覆盖串行搜索的有限超时预算。X来源发现采用主题、原作者线索与自然语言日期窗口；后续仍只接受工具元数据中的真实原帖，按帖子ID校验时间，再核验官方正文和质量。单次AI实测仍没有可用原帖，查询调整尚未解决X来源不足。
+
 ## GitHub Actions
 
 [每日阅读与GitHub周刊](.github/workflows/daily-digest.yml)部署在默认分支。主计划UTC `0 0 * * *`，另在北京时间09:17、10:17、14:17补跑；已发则在调用模型前跳过。每天最多4轮，每轮预算独立；全部失败时最多32次来源搜索、16次普通编辑。周日同一次计划串行处理日报和周刊，某一期失败仍继续另一期；不再用两个同时间cron竞争等待名额。计划按执行时的上海日期生效，运行窗口08:00–20:00，跨到周一不冒充上周周刊。GitHub排队和搜索耗时可能使实际到信晚于08:00；最近两次曾晚触发约2小时41分/45分，不能保证准点到信。普通代码推送只跑测试。
@@ -60,17 +62,20 @@ python -m x_digest --fetch --edition weekly --send # 实际发送周刊
 | Variables | `SMTP_USERNAME` | 发件QQ邮箱 |
 | Variables | `MAIL_TO` | 可省略，默认发给自己 |
 | Variables | `DIGEST_API_BASE` | 可省略，默认`https://n.tokeness.dev/v1` |
-| Variables | `DIGEST_MODEL` | 可省略，默认已验证的`gpt-6-luna` |
+| Variables | `DIGEST_MODEL` | 普通编辑模型，可省略，默认`gpt-6-luna` |
+| Variables | `DIGEST_SEARCH_MODEL` | 联网搜索模型，可省略，默认支持Responses的`gpt-5.6-luna` |
 | Variables | `DIGEST_ENABLED` | 未设置或true开启；false暂停所有定时投递 |
 | Variables | `GITHUB_WEEKLY_ENABLED` | 未设置或true开启周刊；false只暂停周刊 |
 
-读取GitHub项目只需只读token；正式投递任务另申请`contents:write`，仅用于独立的`digest-delivery-state`账本分支，无需新增密钥。普通编辑用`/chat/completions`，来源发现用`/responses`的`web_search`。密钥不写仓库、日志或聊天。程序不自动读取`.env`。
+读取GitHub项目只需只读token；正式投递任务另申请`contents:write`，仅用于独立的`digest-delivery-state`账本分支，无需新增密钥。普通编辑用`/chat/completions`，来源发现用`/responses`的`web_search`。服务商目录中的`gpt-6-luna`只声明普通`openai`路由，不能据普通对话成功推断支持Responses；搜索默认使用明确列出`openai-response`的`gpt-5.6-luna`。密钥不写仓库、日志或聊天。程序不自动读取`.env`。
 
 [完整预览](.github/workflows/check-digest-preview.yml)可分别检查日刊、周刊；[公开来源检查](.github/workflows/check-reading-sources.yml)不调用模型或SMTP，直接诊断GitHub、雪球和实验RSS来源。RSS实际未返回合规雪球链接，未纳入生产来源。API、X搜索、SMTP的旧单项检查仍保留，已通过的基础配置无需反复重做。
 
 正式投递以独立`digest-delivery-state`分支的`reading-ledger.json`为权威账本，记录版次、日期和公开内容ID，默认90天去重、保留180天记录，不存邮箱和密钥。旧X/v2历史已由上线验收迁入。缓存只作本地副本；缺失或损坏可从权威账本恢复。生产账本缺失、读取失败或SHA冲突时停止发信，禁止悄悄重建空历史。
 
 发信前持久登记pending，SMTP接受后转为已发；明确拒绝会解除本次预留，断连或超时等不确定结果保留pending并阻止同一期自动重发，须先核对收件箱和账本。SMTP不提供严格的恰好一次事务，不能保证崩溃时既不重复又一定补送。
+
+修复验收使用独立的`example`版次，每日最多一次；验收材料仍参加90天内容去重。2026-10-23的新3条验收链接不会占用2026-10-24正式日报名额。SMTP接受不等于用户已确认入箱，也不代替连续定时运行验证。
 
 `.local/reading-reserve.json`单独缓存最多120条已核验、未发送的备用材料，内容均为公开导读字段，不含原文或凭据。实时检索不足时重新检查身份、日期、质量和去重后补用；过期新闻不转成经典，学生优惠最多72小时，雪球标题与日期不明正文最多保存48小时，经典核验快照最多30天。邮件明确标出备用阅读。备用缓存丢失只减少候选，不影响已发账本；首次储备为空时无法弥补持续搜索故障。
 
