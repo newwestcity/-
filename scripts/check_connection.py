@@ -478,7 +478,7 @@ def _probe(mode: str, base: str, model: str, key: str, sensitive: tuple[str, ...
     except error.HTTPError as exc:
         code = exc.code if type(exc.code) is int and 100 <= exc.code <= 599 else None
         report = _failure(mode, "HTTP request was not accepted.", code)
-        if code in {400, 422}:
+        if code in {400, 422, 500, 502, 503, 504}:
             report.update(_request_error_details(exc, sensitive))
         return report, 1
     except CheckError as exc:
