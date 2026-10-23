@@ -14,6 +14,7 @@ jobs:
     env:
       DIGEST_API_BASE: ${{ vars.DIGEST_API_BASE || 'https://n.tokeness.dev/v1' }}
       DIGEST_API_KEY: ${{ secrets.DIGEST_API_KEY }}
+      DIGEST_SEARCH_MODEL: gpt-5.6-luna
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
@@ -21,10 +22,10 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
         with:
           python-version: '3.12'
-      - name: 读取密钥可用模型与接口路由（不调用模型）
-        run: python scripts/probe_search_routes.py
+      - name: 串行验证目录明确支持的搜索路由（仅两次请求）
+        run: python scripts/probe_verified_search.py
   public:
-    if: github.event_name == 'workflow_dispatch' || contains(github.event.head_commit.message, '[probe-search-repair]')
+    if: false # 六个公开来源已检查，本轮不重复
     runs-on: ubuntu-latest
     timeout-minutes: 4
     steps:
