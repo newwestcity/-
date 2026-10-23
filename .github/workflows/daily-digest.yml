@@ -2,9 +2,10 @@ name: 每日阅读与 GitHub 周刊
 
 on:
   push:
+    branches: [main]
   schedule:
     - cron: '0 0 * * *' # 每日北京时间08:00
-    - cron: '0 0 * * 0' # 周日北京时间08:00，单独的GitHub周刊
+    - cron: '17 1,2,6 * * *' # 09:17/10:17/14:17补跑；已发则跳过
   workflow_dispatch:
     inputs:
       edition:
@@ -29,8 +30,8 @@ jobs:
   tests:
     runs-on: ubuntu-latest
     outputs:
-      daily_enabled: ${{ steps.schedule.outputs.daily_enabled }}
-      weekly_enabled: ${{ steps.schedule.outputs.weekly_enabled }}
+      matrix: ${{ steps.schedule.outputs.matrix }}
+      has_editions: ${{ steps.schedule.outputs.has_editions }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -43,34 +44,21 @@ jobs:
         env:
           DAILY_OVERRIDE: ${{ vars.DIGEST_ENABLED }}
           WEEKLY_OVERRIDE: ${{ vars.GITHUB_WEEKLY_ENABLED }}
-        run: |
-          python - <<'PY'
-          import os
-          value = os.environ.get('DAILY_OVERRIDE', '').strip().lower()
-          if value not in {'', 'true', 'false'}:
-              print('::error::Invalid DIGEST_ENABLED value; use true or false.')
-              raise SystemExit(2)
-          weekly = os.environ.get('WEEKLY_OVERRIDE', '').strip().lower()
-          if weekly not in {'', 'true', 'false'}:
-              print('::error::Invalid GITHUB_WEEKLY_ENABLED value; use true or false.')
-              raise SystemExit(2)
-          enabled = value != 'false'
-          flag = str(enabled).lower()
-          with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as stream:
-              stream.write('daily_enabled=' + flag + '\n')
-              stream.write('weekly_enabled=' + str(enabled and weekly != 'false').lower() + '\n')
-          print('::notice title=Reading schedules::daily=' + flag + '; weekly=' + str(enabled and weekly != 'false').lower() + '; time=08:00 Asia/Shanghai; weekly_day=Sunday')
-          PY
+          EDITION: ${{ inputs.edition || 'daily' }}
+        run: python scripts/plan_schedule.py
       - run: python -m unittest discover -s tests -v
 
   digest:
     needs: tests
     if: >-
       github.ref_name == github.event.repository.default_branch &&
-      (github.event_name == 'workflow_dispatch' ||
-      (github.event_name == 'schedule' &&
-        ((github.event.schedule == '0 0 * * 0' && needs.tests.outputs.weekly_enabled == 'true') ||
-        (github.event.schedule == '0 0 * * *' && needs.tests.outputs.daily_enabled == 'true'))))
+      needs.tests.outputs.has_editions == 'true'
+    permissions:
+      contents: write # 仅用于独立的投递账本分支；不修改应用代码
+    strategy:
+      fail-fast: false # 日报失败仍继续周刊
+      max-parallel: 1 # 两期串行读写同一份投递历史
+      matrix: ${{ fromJSON(needs.tests.outputs.matrix) }}
     runs-on: ubuntu-latest
     timeout-minutes: 25
     env:
@@ -81,7 +69,8 @@ jobs:
       SMTP_AUTH_CODE: ${{ secrets.SMTP_AUTH_CODE }}
       MAIL_TO: ${{ vars.MAIL_TO }}
       GH_TOKEN: ${{ github.token }}
-      EDITION: ${{ github.event.schedule == '0 0 * * 0' && 'weekly' || inputs.edition || 'daily' }}
+      DIGEST_REQUIRE_LEDGER: 'true'
+      EDITION: ${{ matrix.edition }}
       SEND_MAIL: ${{ github.event_name == 'schedule' || inputs.send_mail == true }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -96,7 +85,7 @@ jobs:
           path: |
             .local/state.json
             .local/reading-state.json
-          key: reading-history-v2-${{ github.run_id }}-${{ github.run_attempt }}
+          key: reading-history-v2-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.edition }}
           restore-keys: |
             reading-history-v2-
       - name: 首次升级导入旧X历史
@@ -131,12 +120,12 @@ jobs:
           path: |
             .local/state.json
             .local/reading-state.json
-          key: reading-history-v2-${{ github.run_id }}-${{ github.run_attempt }}
+          key: reading-history-v2-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.edition }}
       - name: 保存预览（不含邮箱地址和密钥）
         if: success()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
-          name: digest-preview
+          name: digest-preview-${{ matrix.edition }}
           path: .local/preview/digest.html
           retention-days: 7
           if-no-files-found: ignore
@@ -166,7 +155,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
-          name: reading-run-diagnostics
+          name: reading-run-diagnostics-${{ matrix.edition }}
           path: |
             .local/reading-audit.json
             .local/run-result.json

@@ -10,11 +10,13 @@ import json
 import os
 from pathlib import Path
 import re
+import smtplib
 from zoneinfo import ZoneInfo
 
 from .app import ConfigurationError, check_environment, delivery_lock
 from . import editorial, reading_state
 from .discovery import discover_xueqiu
+from .discovery import XueqiuDiscoveryResult
 from .github_projects import fetch_projects
 from .mail import build_reading_message, send_message
 from .oembed import fetch_verified_posts
@@ -143,15 +145,15 @@ def add_xueqiu_links(items, *, candidates, outcomes, seen, settings):
         return items
     used = {item["id"] for item in items} | seen
     authors = {item.get("author_id") for item in items if item["source"] == "雪球"}
-    exceptions = sum(item.get("reading_kind") in {"classic", "undated", "link_candidate"} for item in items)
-    slots = min(3, settings["max_classic_count"] - exceptions,
-                settings["reading"]["xueqiu_target"] - sum(p["source"] == "雪球" for p in items))
+    # Metadata-only links are a separately labelled discovery list, not
+    # reviewed classic articles. They must not consume the three-classic cap.
+    slots = settings["reading"]["xueqiu_target"] - sum(p["source"] == "雪球" for p in items)
     result = list(items)
     finance = re.compile(r"投资|价值|估值|财报|财务|经营|企业|公司|行业|现金流|盈利|资产|风险|金融|银行|保险|股息|"
                          r"invest|valuation|financial|business|cash.flow", re.I)
     excluded = re.compile(r"辱华|支那|K线|短线|涨停|喊单|带单|稳赚|保证收益|加群|荐股", re.I)
     unavailable = {"access_challenge", "unverified_page", "access_denied", "redirect_rejected",
-                   "connection_failed", "rate_limited"}
+                   "connection_failed", "rate_limited", "http_error"}
     for candidate in candidates:
         if slots <= 0:
             break
@@ -159,11 +161,11 @@ def add_xueqiu_links(items, *, candidates, outcomes, seen, settings):
             url, author_id, article_id = canonical_article_url(candidate["url"])
             item_id, title = "xueqiu:" + article_id, candidate["title"]
             if (candidate.get("id") != item_id or candidate.get("discovery_basis") != "search_metadata"
-                    or not isinstance(title, str) or not 6 <= len(title.strip()) <= 240
+                    or not isinstance(title, str) or not 6 <= len(title.strip()) <= 300
                     or not finance.search(title) or excluded.search(title)
                     or item_id in used or author_id in authors or outcomes.get(url) not in unavailable):
                 continue
-            result.append({"id": item_id, "url": url, "source": "雪球", "title": title.strip(),
+            result.append({"id": item_id, "url": url, "source": "雪球", "title": title.strip()[:240],
                            "author_id": author_id, "content_basis": "search_metadata",
                            "reading_kind": "link_candidate", "published_at": "",
                            "discovered_at": candidate.get("discovered_at", "")})
@@ -213,7 +215,10 @@ def _daily(settings, seen, now):
                     diagnostics["x_search_failures"] = failures
             except (ValueError, TypeError):
                 pass
-        snow = snow_future.result()
+        try:
+            snow = snow_future.result()
+        except ProviderError:
+            snow = XueqiuDiscoveryResult([], {"searches_completed": 0, "source_failed": 1})
         diagnostics["xueqiu_discovery"] = snow.diagnostics
         fetched = fetch_articles(snow.urls, now=now) if snow.urls else None
         verified_snow = fetched.articles if fetched else []
@@ -230,14 +235,18 @@ def _daily(settings, seen, now):
             if not pool:
                 continue
             try:
+                review = {}
                 candidates.extend(editorial.curate_articles(**credentials, items=pool, now=now, source=source,
                     allowed_categories=(settings["classic_categories"] if source == "X" and classic else categories),
-                    target_count=min(3, target) if classic else target, classic=classic))
+                    target_count=min(3, target) if classic else target, classic=classic, diagnostics=review))
                 editor_succeeded = True
             except ProviderError as error:
                 editor_failed = True
                 diagnostics[("x" if source == "X" else "xueqiu") + "_editor_failed"] = 1
                 diagnostics[("x" if source == "X" else "xueqiu") + "_editor_error"] = _editor_code(error)
+            finally:
+                diagnostics.setdefault("article_reviews", []).append({"source": source, "classic": classic,
+                                                                      **review})
         if editor_failed and not editor_succeeded:
             source_status[source] = "unavailable"
         elif verified and source_status[source] != "unavailable":
@@ -312,13 +321,31 @@ def run_reading(settings: dict, *, work_dir: Path, send: bool, edition="daily", 
     work_dir.mkdir(parents=True, exist_ok=True)
     with delivery_lock(work_dir / "run.lock"):
         state_path = work_dir / "reading-state.json"
-        state = reading_state.load_state(state_path, legacy_path=work_dir / "state.json")
-        if reading_state.already_sent(state, edition=edition, period=period):
+        def local_history():
+            return reading_state.load_state(state_path, legacy_path=work_dir / "state.json")
+        # A deliberate preview may inspect today's live pipeline after a demo
+        # was delivered. Sending remains strictly once per edition/period.
+        ledger = None
+        if send and os.environ.get("DIGEST_REQUIRE_LEDGER") == "true":
+            from .delivery_ledger import open_ledger
+            ledger = open_ledger(local_history, allow_create=False)
+            state = ledger.history
+        else:
+            state = local_history()
+        if send and reading_state.already_sent(state, edition=edition, period=period):
+            if ledger:
+                # Repair an absent/stale runner cache from the authoritative
+                # ledger even when no new delivery is needed.
+                reading_state.save_state(state_path, state)
             return {"status": "already_sent", "edition": edition, "period": period}
+        if ledger:
+            ledger.check_available(edition=edition, period=period)
         missing = check_environment(send=send)
         if missing:
             raise ConfigurationError("缺少安全配置：" + ", ".join(missing))
         seen = reading_state.seen_ids(state, today=now.date(), history_days=settings["reading"]["history_days"])
+        if ledger:
+            seen |= ledger.pending_ids(today=now.date(), history_days=settings["reading"]["history_days"])
         items, coverage, diagnostics = (_daily if edition == "daily" else _weekly)(settings, seen, now)
         (work_dir / "reading-audit.json").write_text(json.dumps({"edition": edition, "coverage": coverage,
             "diagnostics": diagnostics}, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -337,10 +364,23 @@ def run_reading(settings: dict, *, work_dir: Path, send: bool, edition="daily", 
         (preview / "digest.json").write_text(json.dumps({"date": date, "edition": edition, "items": items,
             "coverage": coverage}, ensure_ascii=False, indent=2), encoding="utf-8")
         if send:
-            send_message(message, username=sender, password=os.environ["SMTP_AUTH_CODE"])
+            if ledger:
+                ledger.reserve(edition=edition, period=period, date=date, item_ids=[item["id"] for item in items],
+                               sent_at=now.isoformat())
             try:
-                reading_state.record_delivery(state_path, state, edition=edition, period=period, date=date,
+                send_message(message, username=sender, password=os.environ["SMTP_AUTH_CODE"])
+            except (smtplib.SMTPAuthenticationError, smtplib.SMTPConnectError, smtplib.SMTPSenderRefused,
+                    smtplib.SMTPRecipientsRefused, smtplib.SMTPDataError):
+                # These replies explicitly reject delivery. Disconnects and
+                # timeouts can happen after DATA acceptance: keep their intent.
+                if ledger:
+                    ledger.cancel()
+                raise
+            try:
+                saved = reading_state.record_delivery(state_path, state, edition=edition, period=period, date=date,
                     item_ids=[item["id"] for item in items], sent_at=now.isoformat(), history_days=180)
+                if ledger:
+                    ledger.complete(saved)
             except (ValueError, OSError) as exc:
                 raise ConfigurationError("SMTP已接受邮件，但发送记录保存失败；重跑前请先核对收件箱") from exc
         return {"status": "smtp_accepted" if send else "preview", "edition": edition, "date": date,

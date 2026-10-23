@@ -242,6 +242,63 @@ class EditorialTests(unittest.TestCase):
         self.assertEqual(editorial.EditorialError("固定文案", code=SECRET).code, "invalid_output")
         self.assertEqual(editorial._invalid_output(SECRET).code, "invalid_output")
 
+    def test_article_invalid_items_do_not_discard_other_grounded_recommendations(self):
+        cases = [None, {**article_output(), "id": "unknown"},
+                 {**article_output(), "summary": "x" * 181},
+                 {**article_output(), "evidence_excerpt": "This quotation is absent from the verified article."},
+                 {**article_output(), "category": "unlisted"}]
+        for invalid in cases:
+            with self.subTest(invalid=invalid):
+                diagnostics = {}
+                result, opener, _ = self.call([invalid, article_output()], diagnostics=diagnostics)
+                self.assertEqual([item["id"] for item in result], [article()["id"]])
+                self.assertEqual(result[0]["evidence_excerpt"], QUOTE)
+                self.assertEqual(opener.open.call_count, 1)
+                self.assertEqual(diagnostics["items_received"], 2)
+                self.assertEqual(diagnostics["items_invalid"], 1)
+                self.assertEqual(diagnostics["items_accepted"], 1)
+                self.assertEqual(diagnostics["items_selected"], 1)
+                self.assertTrue(set(diagnostics) <= editorial.EDITORIAL_DIAGNOSTIC_KEYS)
+
+    def test_article_duplicate_does_not_erase_first_valid_item(self):
+        diagnostics = {}
+        result, _, _ = self.call([article_output(), article_output()], diagnostics=diagnostics)
+        self.assertEqual(len(result), 1)
+        self.assertEqual(diagnostics["invalid_invalid_id_id"], 1)
+        self.assertEqual(diagnostics["items_selected"], 1)
+
+    def test_article_all_invalid_reports_first_fixed_reason_and_safe_counts(self):
+        diagnostics = {}
+        with self.assertRaises(editorial.EditorialError) as caught:
+            self.call([{**article_output(), "evidence_excerpt": SECRET * 2},
+                       {**article_output(), "summary": "x" * 181}], diagnostics=diagnostics)
+        self.assertEqual(caught.exception.code, "evidence_quote")
+        self.assertEqual(diagnostics["items_invalid"], 2)
+        self.assertEqual(diagnostics["invalid_evidence_quote_evidence_excerpt"], 1)
+        self.assertEqual(diagnostics["invalid_invalid_length_summary"], 1)
+        self.assertNotIn(SECRET, json.dumps(diagnostics))
+
+    def test_article_below_threshold_is_not_misclassified_as_editor_failure(self):
+        below_threshold = deepcopy(article_output())
+        below_threshold["scores"]["learning"] = 14
+        diagnostics = {}
+        result, _, _ = self.call([{**article_output(), "id": "unknown"}, below_threshold],
+                                 diagnostics=diagnostics)
+        self.assertEqual(result, [])
+        self.assertEqual(diagnostics["items_invalid"], 1)
+        self.assertEqual(diagnostics["items_below_threshold"], 1)
+        self.assertEqual(diagnostics["items_selected"], 0)
+
+    def test_article_diagnostics_configuration_is_checked_before_request(self):
+        for value in ([], {"raw_response": SECRET}, {"items_received": True}, {"items_invalid": -1}):
+            with self.subTest(value=value), patch.object(editorial.request, "build_opener") as opener:
+                with self.assertRaises(editorial.EditorialError) as caught:
+                    editorial.curate_articles(base_url="https://relay.example/v1", api_key=SECRET,
+                        model="chat-model", items=[article()], target_count=10, now=NOW, source="X",
+                        allowed_categories=["投资"], diagnostics=value)
+                self.assertEqual(caught.exception.code, "invalid_configuration")
+                opener.assert_not_called()
+
     def test_response_error_codes_distinguish_json_finish_and_size(self):
         cases = [(None, b"invalid json", "invalid_json"),
                  (None, b"x" * (editorial.MAX_RESPONSE_BYTES + 1), "response_too_large"),

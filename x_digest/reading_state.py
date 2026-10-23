@@ -253,7 +253,13 @@ def record_delivery(
                     "item_ids": item_ids, "sent_at": sent_at})
     entries.sort(key=lambda entry: (entry["date"], entry["edition"], entry["period"]))
     updated = _validated_state({"version": 2, "deliveries": entries})
-    encoded = (json.dumps(updated, ensure_ascii=False, indent=2) + "\n").encode("utf-8")
+    return save_state(path, updated)
+
+
+def save_state(path: Path, state: dict) -> dict:
+    """Atomically save a validated history restored from the durable ledger."""
+    clean = _validated_state(state)
+    encoded = (json.dumps(clean, ensure_ascii=False, indent=2) + "\n").encode("utf-8")
     if len(encoded) > _MAX_BYTES:
         raise ValueError("Delivery state exceeds the 2 MiB limit")
 
@@ -271,4 +277,4 @@ def record_delivery(
     finally:
         if temporary_path is not None:
             temporary_path.unlink(missing_ok=True)
-    return updated
+    return clean

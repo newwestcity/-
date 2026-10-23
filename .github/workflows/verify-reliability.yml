@@ -1,0 +1,118 @@
+name: 本轮完整日报可靠性验收
+on:
+  push:
+    branches: [main]
+    paths: ['.github/workflows/verify-reliability.yml']
+permissions:
+  contents: read
+jobs:
+  verify:
+    if: contains(github.event.head_commit.message, '[verify-reliability]')
+    permissions:
+      contents: write
+    concurrency:
+      group: daily-x-digest
+      cancel-in-progress: false
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      DIGEST_API_BASE: ${{ vars.DIGEST_API_BASE || 'https://n.tokeness.dev/v1' }}
+      DIGEST_MODEL: ${{ vars.DIGEST_MODEL || 'gpt-6-luna' }}
+      DIGEST_API_KEY: ${{ secrets.DIGEST_API_KEY }}
+      SMTP_USERNAME: ${{ vars.SMTP_USERNAME }}
+      SMTP_AUTH_CODE: ${{ secrets.SMTP_AUTH_CODE }}
+      MAIL_TO: ${{ vars.MAIL_TO }}
+      GH_TOKEN: ${{ github.token }}
+      DIGEST_REQUIRE_LEDGER: 'true'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: '3.12'
+      - run: python -m unittest discover -s tests -q
+      - uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25
+        with:
+          path: |
+            .local/state.json
+            .local/reading-state.json
+          key: reading-history-v2-verify-${{ github.run_id }}
+          restore-keys: reading-history-v2-
+      - name: 迁移真实已发账本并验证重跑不调用模型
+        run: |
+          python - <<'PY'
+          from datetime import datetime
+          import json
+          from pathlib import Path
+          from zoneinfo import ZoneInfo
+          from unittest.mock import patch
+          from x_digest.app import load_settings
+          from x_digest import reading_state
+          from x_digest.delivery_ledger import open_ledger
+          from x_digest.reading import run_reading
+          work = Path('.local')
+          history = reading_state.load_state(work / 'reading-state.json', legacy_path=work / 'state.json')
+          # Migration must contain today's accepted demo; never turn this
+          # regression check into an accidental second real mail.
+          today = datetime.now(ZoneInfo('Asia/Shanghai')).date().isoformat()
+          if not reading_state.already_sent(history, edition='daily', period=today):
+              raise SystemExit('::error::Expected migration history is missing; no mail attempted.')
+          ledger = open_ledger(history)
+          assert reading_state.already_sent(ledger.history, edition='daily', period=today)
+          # Simulate cache eviction. Remote authority must still skip delivery.
+          for name in ('reading-state.json', 'state.json'):
+              (work / name).unlink(missing_ok=True)
+          with patch('x_digest.reading._daily', side_effect=AssertionError('Model must not be called')), \
+               patch('x_digest.reading.send_message', side_effect=AssertionError('Mail must not repeat')):
+              result = run_reading(load_settings(Path('settings.json')), work_dir=work, send=True)
+          assert result['status'] == 'already_sent'
+          assert reading_state.load_state(work / 'reading-state.json') == ledger.history
+          print('::notice title=Live durable ledger::remote_history=true;evicted_cache_recovered=true;repeat_skipped=true;new_model_calls=0;mail_sent=false')
+          PY
+      - name: 完整日报真实检索与评审（不重发当日邮件）
+        env:
+          EDITION: daily
+        run: python scripts/preview_reading.py
+      - name: 保存验收预览及来源证据
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: reliability-daily-preview
+          path: |
+            .local/preview/digest.html
+            .local/reading-audit.json
+          retention-days: 7
+          if-no-files-found: ignore
+  reviews:
+    if: contains(github.event.head_commit.message, '[verify-reliability]')
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: 读取用户指定的两份公开监修记录
+        run: |
+          python - <<'PY'
+          from html.parser import HTMLParser
+          import json, re, urllib.request
+          class Visible(HTMLParser):
+              def __init__(self):
+                  super().__init__(); self.hidden=0; self.parts=[]
+              def handle_starttag(self, tag, attrs):
+                  if tag in {'script','style'}: self.hidden+=1
+              def handle_endtag(self, tag):
+                  if tag in {'script','style'}: self.hidden=max(0,self.hidden-1)
+              def handle_data(self, data):
+                  if not self.hidden and data.strip(): self.parts.append(data.strip())
+          for identifier in ('6adb2c8b-0c1c-83e9-8464-5a317b97b31f','6adb2cac-cf0c-83e9-a46c-f389080c587a'):
+              try:
+                  req=urllib.request.Request('https://chatgpt.com/share/'+identifier, headers={'User-Agent':'Mozilla/5.0'})
+                  with urllib.request.urlopen(req,timeout=25) as response: raw=response.read(2500000).decode()
+                  parser=Visible(); parser.feed(raw)
+                  text='\n'.join(parser.parts)
+                  text=re.sub(r'sk-[A-Za-z0-9_-]+|[A-Za-z0-9_.+-]+@[A-Za-z0-9.-]+|\b[a-z]{16}\b','[redacted]',text)
+                  for number in range(0,min(len(text),40000),4000):
+                      safe=json.dumps({'share':identifier,'part':number//4000,'text':text[number:number+4000]},ensure_ascii=False)
+                      print('::notice title=Requested review::'+safe.replace('%','%25').replace('\r','%0D').replace('\n','%0A'))
+              except Exception as exc:
+                  print('::notice title=Requested review::'+json.dumps({'share':identifier,'readable':False,'error_type':type(exc).__name__}))
+          PY

@@ -9,7 +9,7 @@ import smtplib
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from x_digest.app import ConfigurationError, load_settings
 from x_digest.editorial import EditorialError
@@ -116,6 +116,75 @@ class ReadingTests(unittest.TestCase):
         daily.assert_called_once()
         self.send.assert_called_once()
         self.build.assert_called_once()
+
+    def ledger(self, *, history=None):
+        ledger = Mock()
+        ledger.history = history or {"version": 2, "deliveries": []}
+        ledger.pending_ids.return_value = set()
+        return ledger
+
+    def test_durable_history_recovers_corrupt_cache_and_skips_without_model_or_smtp(self):
+        history = reading_state.record_delivery(self.work / "reading-state.json", {"version": 2, "deliveries": []},
+            edition="daily", period="2026-10-20", date="2026-10-20", item_ids=["xueqiu:1"],
+            sent_at=NOW.isoformat())
+        (self.work / "reading-state.json").write_text("corrupt runner cache")
+        ledger = self.ledger(history=history)
+        with patch.dict("os.environ", {"DIGEST_REQUIRE_LEDGER": "true"}), \
+             patch("x_digest.delivery_ledger.open_ledger", return_value=ledger) as open_remote, \
+             patch("x_digest.reading._daily") as daily:
+            result = self.run_edition(send=True)
+        self.assertEqual(result["status"], "already_sent")
+        self.assertFalse(open_remote.call_args.kwargs["allow_create"])
+        self.assertEqual(reading_state.load_state(self.work / "reading-state.json"), history)
+        daily.assert_not_called()
+        self.send.assert_not_called()
+
+    def test_durable_unconfirmed_send_blocks_before_paid_search(self):
+        from x_digest.delivery_ledger import LedgerError
+        ledger = self.ledger()
+        ledger.check_available.side_effect = LedgerError("本期已有未确认的SMTP发送记录")
+        with patch.dict("os.environ", {"DIGEST_REQUIRE_LEDGER": "true"}), \
+             patch("x_digest.delivery_ledger.open_ledger", return_value=ledger), \
+             patch("x_digest.reading._daily") as daily:
+            with self.assertRaises(LedgerError):
+                self.run_edition(send=True)
+        daily.assert_not_called()
+        self.send.assert_not_called()
+
+    def test_durable_reservation_precedes_smtp_and_completion_follows_acceptance(self):
+        ledger, effects = self.ledger(), []
+        ledger.reserve.side_effect = lambda **kw: effects.append("reserve")
+        self.send.side_effect = lambda *a, **kw: effects.append("smtp")
+        ledger.complete.side_effect = lambda history: effects.append("complete")
+        with patch.dict("os.environ", {"DIGEST_REQUIRE_LEDGER": "true"}), \
+             patch("x_digest.delivery_ledger.open_ledger", return_value=ledger), \
+             patch("x_digest.reading._daily", return_value=edition_result([article()])):
+            self.assertEqual(self.run_edition(send=True)["status"], "smtp_accepted")
+        self.assertEqual(effects, ["reserve", "smtp", "complete"])
+        self.assertEqual(ledger.complete.call_args.args[0], reading_state.load_state(self.work / "reading-state.json"))
+
+    def test_durable_explicit_smtp_rejection_releases_but_disconnect_keeps_reservation(self):
+        for error, release in ((smtplib.SMTPAuthenticationError(535, b"refused"), True),
+                               (smtplib.SMTPDataError(451, b"try later"), True),
+                               (smtplib.SMTPServerDisconnected("ambiguous"), False),
+                               (TimeoutError("ambiguous"), False)):
+            with self.subTest(error=type(error).__name__):
+                ledger = self.ledger()
+                self.send.side_effect = error
+                with patch.dict("os.environ", {"DIGEST_REQUIRE_LEDGER": "true"}), \
+                     patch("x_digest.delivery_ledger.open_ledger", return_value=ledger), \
+                     patch("x_digest.reading._daily", return_value=edition_result([article()])):
+                    with self.assertRaises(type(error)):
+                        self.run_edition(send=True)
+                self.assertEqual(ledger.cancel.called, release)
+                ledger.complete.assert_not_called()
+
+    def test_preview_after_same_day_delivery_still_exercises_full_reading_pipeline(self):
+        with patch("x_digest.reading._daily", return_value=edition_result([article()])) as daily:
+            self.run_edition(send=True)
+            self.assertEqual(self.run_edition()["status"], "preview")
+        self.assertEqual(daily.call_count, 2)
+        self.assertEqual(self.send.call_count, 1)
 
     def test_invalid_mail_configuration_stops_before_collectors_and_editors(self):
         for update in [{"MAIL_TO": "not-a-mailbox"}, {"SMTP_USERNAME": "reader@qq.com\r\nBcc: other@test.com"},
@@ -343,31 +412,31 @@ class ReadingTests(unittest.TestCase):
         outcomes.update({p["url"]: "access_challenge" for p in valid})
         chosen = reading.add_xueqiu_links([], candidates=candidates, outcomes=outcomes,
                                          seen={"xueqiu:14"}, settings=self.settings)
-        self.assertEqual([p["id"] for p in chosen], ["xueqiu:1", "xueqiu:3", "xueqiu:4"])
-        self.assertEqual(len({p["author_id"] for p in chosen}), 3)
+        self.assertEqual([p["id"] for p in chosen], ["xueqiu:1", "xueqiu:3", "xueqiu:4", "xueqiu:5"])
+        self.assertEqual(len({p["author_id"] for p in chosen}), 4)
         self.assertTrue(all(p["reading_kind"] == "link_candidate" for p in chosen))
         self.assertTrue(all(not {"summary", "reason", "author", "score_total", "scores", "text"} & p.keys()
                             for p in chosen))
         self.assertEqual(chosen[0]["title"], valid[0]["title"])
         self.assertEqual(chosen[0]["content_basis"], "search_metadata")
 
-    def test_snow_link_candidates_share_three_exception_slots_with_classics_and_unknown_dates(self):
+    def test_snow_link_candidates_have_independent_quota_from_reviewed_classics(self):
         existing = [article("X", age=60), article(number=20, age=None)]
         links = [link_candidate(i) for i in range(1, 5)]
         outcomes = {p["url"]: "access_denied" for p in links}
         chosen = reading.add_xueqiu_links(existing, candidates=links, outcomes=outcomes,
                                          seen=set(), settings=self.settings)
-        self.assertEqual(len(chosen), 3)
-        self.assertEqual(sum(p["reading_kind"] == "link_candidate" for p in chosen), 1)
+        self.assertEqual(len(chosen), 5)
+        self.assertEqual(sum(p["reading_kind"] == "link_candidate" for p in chosen), 3)
         self.assertEqual(existing, chosen[:2])
         full = existing + [article("X", number=30, age=90)]
-        self.assertEqual(reading.add_xueqiu_links(full, candidates=links, outcomes=outcomes,
-                                                seen=set(), settings=self.settings), full)
+        self.assertEqual(len(reading.add_xueqiu_links(full, candidates=links, outcomes=outcomes,
+                                                    seen=set(), settings=self.settings)), 6)
         self.settings["reading"]["xueqiu_link_fallback"] = False
         self.assertEqual(reading.add_xueqiu_links([], candidates=links, outcomes=outcomes,
                                                 seen=set(), settings=self.settings), [])
 
-    def test_daily_waf_fallback_previews_three_links_without_model_assessment_or_delivery_record(self):
+    def test_daily_waf_fallback_previews_four_links_without_model_assessment_or_delivery_record(self):
         links = [link_candidate(i) for i in range(1, 6)]
         with patch("x_digest.reading.search_by_category", side_effect=ProviderError("synthetic X outage")), \
              patch("x_digest.reading.fetch_verified_posts") as xfetch, \
@@ -378,7 +447,7 @@ class ReadingTests(unittest.TestCase):
              patch("x_digest.reading.editorial.curate_articles") as edit:
             result = self.run_edition()
         self.assertEqual(result["status"], "preview")
-        self.assertEqual(result["source_counts"], {"雪球": 3})
+        self.assertEqual(result["source_counts"], {"雪球": 4})
         content = json.loads((self.work / "preview/digest.json").read_text())
         self.assertEqual(content["coverage"]["source_status"], {"X": "unavailable", "雪球": "links_only"})
         self.assertTrue(all(p["reading_kind"] == "link_candidate" for p in content["items"]))

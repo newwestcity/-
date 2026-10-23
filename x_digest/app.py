@@ -273,7 +273,8 @@ def main(argv: list[str] | None = None) -> int:
         return 1
     except (ValueError, KeyError, OSError) as exc:
         from .provider import ProviderError
-        if isinstance(exc, (ConfigurationError, ProviderError)):
+        from .delivery_ledger import LedgerError
+        if isinstance(exc, (ConfigurationError, ProviderError, LedgerError)):
             print(str(exc), file=sys.stderr)
         else:
             print("配置、网络或本地文件操作失败；请检查参数与服务可用性。", file=sys.stderr)

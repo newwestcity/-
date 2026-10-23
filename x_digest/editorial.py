@@ -241,7 +241,7 @@ def _article_sources(items, source):
 
 def curate_articles(*, base_url: str, api_key: str, model: str, items: list[dict],
                     allowed_categories: list[str], target_count: int, now: datetime,
-                    source: str, classic: bool = False) -> list[dict]:
+                    source: str, classic: bool = False, diagnostics: dict | None = None) -> list[dict]:
     """Score verified articles, keeping all source identity outside model control.
 
     Date windows, blocked authors, source diversity and the combined classic cap
@@ -253,6 +253,13 @@ def curate_articles(*, base_url: str, api_key: str, model: str, items: list[dict
             or any(not isinstance(c, str) or not c.strip() for c in allowed_categories)
             or len(set(allowed_categories)) != len(allowed_categories)):
         raise EditorialError("文章来源、分类或经典模式配置无效", code="invalid_configuration")
+    if diagnostics is not None and (not isinstance(diagnostics, dict)
+            or any(key not in EDITORIAL_DIAGNOSTIC_KEYS or type(value) is not int or value < 0
+                   for key, value in diagnostics.items())):
+        raise EditorialError("编辑诊断配置无效；未发起编辑请求", code="invalid_configuration")
+    counters = diagnostics if diagnostics is not None else {}
+    def count(key):
+        counters[key] = counters.get(key, 0) + 1
     categories = allowed_categories
     if classic:
         accepted = {"股市", "投资", "读书"} if source == "X" else _FINANCE
@@ -291,29 +298,43 @@ def curate_articles(*, base_url: str, api_key: str, model: str, items: list[dict
         + json.dumps(candidates, ensure_ascii=False)
     )
     output = _chat(endpoint=endpoint, api_key=api_key, model=model, prompt=prompt, target=target_count)
-    result, selected = [], set()
+    result, selected, first_error, valid_count = [], set(), None, 0
     for value in output:
-        if not isinstance(value, dict) or set(value) != _ARTICLE_KEYS:
-            raise _invalid_output("bad_keys")
-        item_id = value.get("id")
-        if not isinstance(item_id, str) or item_id not in verified or item_id in selected:
-            raise _invalid_output("invalid_id")
-        public, body = verified[item_id]
-        if value["category"] not in categories:
-            raise _invalid_output("invalid_category")
-        forms = {"long_post", "thread_excerpt"} if source == "X" else {"article", "article_excerpt"}
-        if (not isinstance(value["content_form"], str) or value["content_form"] not in forms
-                or type(value["estimated_read_minutes"]) is not int
-                or not 1 <= value["estimated_read_minutes"] <= 120):
-            raise _invalid_output("invalid_field")
-        scores, total = _scores(value["scores"], _ARTICLE_SCORES)
-        generated = {"title": _text(value["title"], 100), "summary": _text(value["summary"], 180),
-                     "reason": _text(value["reason"], 100),
-                     "learning_points": _list(value["learning_points"], minimum=2, maximum=3, length=80),
-                     "evidence_excerpt": _evidence(value["evidence_excerpt"], body)}
+        count("items_received")
+        try:
+            if not isinstance(value, dict) or set(value) != _ARTICLE_KEYS:
+                raise _invalid_output("bad_keys")
+            item_id = value.get("id")
+            if not isinstance(item_id, str) or item_id not in verified or item_id in selected:
+                raise _invalid_output("invalid_id", "id")
+            public, body = verified[item_id]
+            if value["category"] not in categories:
+                raise _invalid_output("invalid_category")
+            forms = {"long_post", "thread_excerpt"} if source == "X" else {"article", "article_excerpt"}
+            if (not isinstance(value["content_form"], str) or value["content_form"] not in forms
+                    or type(value["estimated_read_minutes"]) is not int
+                    or not 1 <= value["estimated_read_minutes"] <= 120):
+                raise _invalid_output("invalid_field")
+            scores, total = _scores(value["scores"], _ARTICLE_SCORES)
+            generated = {"title": _text(value["title"], 100, field="title"),
+                         "summary": _text(value["summary"], 180, field="summary"),
+                         "reason": _text(value["reason"], 100, field="reason"),
+                         "learning_points": _list(value["learning_points"], minimum=2, maximum=3, length=80,
+                                                  field="learning_points"),
+                         "evidence_excerpt": _evidence(value["evidence_excerpt"], body)}
+        except EditorialError as exc:
+            first_error = first_error or exc
+            count("items_invalid")
+            count("invalid_" + exc.code)
+            if exc.field:
+                count("invalid_" + exc.code + "_" + exc.field)
+            continue
+        valid_count += 1
         selected.add(item_id)
         if total < 75 or scores["depth"] < 18 or scores["learning"] < 15:
+            count("items_below_threshold")
             continue
+        count("items_accepted")
         excerpt = (source == "X" or "excerpt" in public["content_basis"]
                    or public.get("text_truncated") is True or len(body) == 10000)
         result.append({**public, **generated, "category": value["category"], "scores": scores,
@@ -324,7 +345,11 @@ def curate_articles(*, base_url: str, api_key: str, model: str, items: list[dict
                        "score_notice": "分数为编辑评估，不代表事实真伪保证",
                        "reading_kind": "undated" if not public["published_at"] else ("classic" if classic else "recent"),
                        "is_long_read": len(body) >= 700 or len(body.split()) >= 150})
-    return sorted(result, key=lambda item: -item["score_total"])[:target_count]
+    if not valid_count and first_error is not None:
+        raise first_error
+    chosen = sorted(result, key=lambda item: -item["score_total"])[:target_count]
+    counters["items_selected"] = counters.get("items_selected", 0) + len(chosen)
+    return chosen
 
 
 def _project_sources(items):
