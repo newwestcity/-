@@ -1,10 +1,6 @@
 name: 验证 X 搜索接口
 
 on:
-  push:
-    branches: [main]
-    paths:
-      - '.github/workflows/check-x-search.yml'
   workflow_dispatch:
 
 permissions:

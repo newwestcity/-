@@ -1,9 +1,5 @@
 name: 阅读来源实际访问检查
 on:
-  push:
-    paths:
-      - '.github/workflows/check-reading-sources.yml'
-      - 'scripts/check_reading_sources.py'
   workflow_dispatch:
 permissions:
   contents: read

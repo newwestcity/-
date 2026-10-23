@@ -369,7 +369,7 @@ def _request_error_details(exc, sensitive: tuple[str, ...]) -> dict:
                           "max_tokens", "max_completion_tokens", "stream", "response_format"}
         result = {"rejected_field": param} if isinstance(param, str) and param in allowed_fields else {}
         category = "request_rejected"
-        if any(word in message for word in ("no available channel", "failed to get available channel", "model_not_configured", "无可用渠道")):
+        if any(word in message for word in ("no available channel", "failed to get available channel", "model_not_configured", "无可用渠道", "可用渠道失败")):
             category = "no_available_model_channel"
         elif any(word in message for word in ("insufficient quota", "insufficient balance", "余额不足", "额度不足")):
             category = "quota_or_balance"

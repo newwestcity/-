@@ -136,7 +136,7 @@ def _one(endpoint: str, api_key: str, payload: dict) -> tuple[list[dict], str]:
         # Never read, print or propagate provider bodies, which can echo keys.
         code = exc.code
         exc.close()
-        return [], "http_" + str(code) if code in {400, 401, 403, 404, 429} else "http_error"
+        return [], "http_" + str(code) if code in {400, 401, 403, 404, 429, 500, 502, 503, 504} else "http_error"
     except ProviderError:
         return [], "redirect_rejected"
     except TimeoutError:
@@ -204,25 +204,4 @@ def discover_xueqiu(*, base_url: str, api_key: str, model: str, now: datetime,
                   for identity, canonical in accepted.items() if identity in titles]
     diagnostics["candidate_urls"] = len(urls)
     diagnostics["metadata_titled_candidates"] = len(candidates)
-    return XueqiuDiscoveryResult(urls, diagnostics, candidates)
-
-
-def discover_xueqiu_sources(*, base_url: str, api_key: str, model: str, now: datetime,
-                            seen_ids: set[str]) -> XueqiuDiscoveryResult:
-    """Prefer public title feeds; use the relay only when the feed is insufficient."""
-    validate_configuration(base_url=base_url, api_key=api_key, model=model)
-    from .search_feed import discover_xueqiu_feed
-    feed = discover_xueqiu_feed(now=now, seen_ids=seen_ids)
-    diagnostics = {"feed_" + key: value for key, value in feed.diagnostics.items()}
-    if len(feed.candidates) >= 3:
-        diagnostics.update(search_requests=0, searches_completed=0,
-                           candidate_urls=len(feed.urls), metadata_titled_candidates=len(feed.candidates))
-        return XueqiuDiscoveryResult(feed.urls, diagnostics, feed.candidates)
-    relay = discover_xueqiu(base_url=base_url, api_key=api_key, model=model, now=now, seen_ids=seen_ids)
-    diagnostics.update(relay.diagnostics)
-    urls = list(dict.fromkeys([*feed.urls, *relay.urls]))[:MAX_CANDIDATES]
-    by_url = {item["url"]: item for item in relay.candidates}
-    by_url.update({item["url"]: item for item in feed.candidates})
-    candidates = [by_url[url] for url in urls if url in by_url]
-    diagnostics.update(candidate_urls=len(urls), metadata_titled_candidates=len(candidates))
     return XueqiuDiscoveryResult(urls, diagnostics, candidates)

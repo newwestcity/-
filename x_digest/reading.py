@@ -14,7 +14,7 @@ from zoneinfo import ZoneInfo
 
 from .app import ConfigurationError, check_environment, delivery_lock
 from . import editorial, reading_state
-from .discovery import discover_xueqiu_sources as discover_xueqiu
+from .discovery import discover_xueqiu
 from .github_projects import fetch_projects
 from .mail import build_reading_message, send_message
 from .oembed import fetch_verified_posts
@@ -206,7 +206,8 @@ def _daily(settings, seen, now):
             try:
                 failures = json.loads(str(error).partition("诊断=")[2])
                 allowed = {"no_sources", "not_json", "incomplete", "no_tool", "invalid_posts", "network", "other",
-                           "HTTP400", "HTTP401", "HTTP403", "HTTP404", "HTTP429"}
+                           "HTTP400", "HTTP401", "HTTP403", "HTTP404", "HTTP408", "HTTP422", "HTTP429",
+                           "HTTP500", "HTTP502", "HTTP503", "HTTP504"}
                 if (isinstance(failures, dict) and set(failures) <= allowed
                         and all(type(n) is int and 0 <= n <= len(settings["categories"]) for n in failures.values())):
                     diagnostics["x_search_failures"] = failures

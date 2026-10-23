@@ -4,7 +4,7 @@
 
 X优先科技、AI、金融的长帖、深入讨论和实践教程，也保留读书、大学生权益。雪球侧重价值投资、企业经营、财务与估值、行业研究和风险管理，不选K线、短线喊单或带单。GitHub优先 **AI应用、自动化、实用工具，语言不限**，要求有实际代码、明确许可证和快速开始说明。
 
-原有可回退版本已经保存为 **`v0.1.0-demo`**。最新实测和恢复入口见 [PROJECT_STATUS.md](PROJECT_STATUS.md)。既有API密钥、QQ SMTP已经配置成功，升级不需要重新填写。
+原有可回退版本为 **`v0.1.0-demo`**，升级示范版保存为 **`v0.2.0-demo`**。2026-10-23的2条雪球链接示范已被QQ服务器接受；GitHub周刊已有5项实际预览，目标10。X仍受Tokeness渠道暂不可用影响。最新实测和恢复入口见 [PROJECT_STATUS.md](PROJECT_STATUS.md)。既有API密钥、QQ SMTP已经配置成功，升级不需要重新填写。
 
 ## 筛选依据
 
@@ -43,11 +43,11 @@ python -m x_digest --fetch --edition weekly --send # 实际发送周刊
 
 `--check`只检查配置，不联网、不发信。预览保存在`.local/preview/digest.html`，不记录为发送成功。正式发送只有在SMTP接受后才记账。同日的日报与周刊分开记账：日报每日一次，周刊每个ISO周一次；手动发正式周刊会占用该周的发送名额。
 
-每次日报最多6次X来源搜索＋2次雪球来源搜索，最多20条X摘录和12篇雪球原文，至多4次普通编辑调用。每个搜索只允许1次工具调用、最多1500输出token，无自动重试。周刊最多3次GitHub API搜索＋20次README读取＋2次模型编辑（每批5个，最多并行2批），不运行候选代码。只在原文核验后调用编辑；失败的来源不阻断其他有效来源。预览和发送分别执行会分别产生调用；工具和token限制不是金额上限。
+每次日报最多6次X来源搜索＋2次雪球来源搜索，最多20条X摘录和12篇雪球原文，至多4次普通编辑调用。每个领域至多一次API搜索请求，最多1500输出token，无自动重试。中转站不接受`max_tool_calls`，因此该配置只限制本地请求预算，不能硬限制服务端内部搜索次数。周刊最多3次GitHub API搜索＋20次README读取＋2次模型编辑（每批5个，最多并行2批），不运行候选代码。只在原文核验后调用编辑；失败的来源不阻断其他有效来源。预览和发送分别执行会分别产生调用；工具和token限制不是金额上限。
 
 ## GitHub Actions
 
-[每日阅读与GitHub周刊](.github/workflows/daily-digest.yml)部署在默认分支。每日cron是UTC `0 0 * * *`，周刊cron是UTC `0 0 * * 0`。两个事件产生两封独立邮件，共享串行投递和去重历史；GitHub排队和搜索耗时可能使实际到信晚于08:00。推送只跑测试，不自动调用模型或发邮件。
+[每日阅读与GitHub周刊](.github/workflows/daily-digest.yml)部署在默认分支。每日cron是UTC `0 0 * * *`，周刊cron是UTC `0 0 * * 0`。两个事件产生两封独立邮件，共享串行投递和去重历史；GitHub排队和搜索耗时可能使实际到信晚于08:00；最近两次定时实际晚触发约2小时41分/45分，不能保证准点到信。推送只跑测试，不自动调用模型或发邮件。
 
 进入 **Actions → 每日阅读与 GitHub 周刊 → Run workflow**，选择`daily`或`weekly`；不勾选`send_mail`只生成预览，勾选则真实发信。HTML在运行详情的Artifacts下载。
 
@@ -66,7 +66,7 @@ python -m x_digest --fetch --edition weekly --send # 实际发送周刊
 
 周刊使用GitHub自动提供的只读token访问官方API，不需要新增密钥。普通编辑用`/chat/completions`，来源发现用`/responses`的`web_search`。密钥不写仓库、日志或聊天。程序不自动读取`.env`。
 
-[完整预览](.github/workflows/check-digest-preview.yml)可分别检查日刊、周刊；[公开来源检查](.github/workflows/check-reading-sources.yml)不调用模型或SMTP，直接验证GitHub和雪球读取能力。API、X搜索、SMTP的旧单项检查仍保留，已通过的基础配置无需反复重做。
+[完整预览](.github/workflows/check-digest-preview.yml)可分别检查日刊、周刊；[公开来源检查](.github/workflows/check-reading-sources.yml)不调用模型或SMTP，直接诊断GitHub、雪球和实验RSS来源。RSS实际未返回合规雪球链接，未纳入生产来源。API、X搜索、SMTP的旧单项检查仍保留，已通过的基础配置无需反复重做。
 
 `.local/reading-state.json`记录两种版次与内容ID，默认90天不重复推荐，保留180天发送记录。首次运行会导入旧`.local/state.json`中的X已读历史。Actions缓存同时保存这两个文件；缓存丢失会影响跨次去重。坏状态文件拒绝继续，不静默清空。SMTP已接受但记账失败会明确报错，核对收件箱后再处理。
 

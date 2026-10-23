@@ -5,7 +5,6 @@ import os
 from pathlib import Path
 import sys
 from zoneinfo import ZoneInfo
-from urllib.parse import urlsplit
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from x_digest.github_projects import fetch_projects
@@ -13,7 +12,6 @@ from x_digest.app import load_settings
 from x_digest.mail import build_reading_message
 from x_digest.reading import add_xueqiu_links
 from x_digest.search_feed import discover_xueqiu_feed
-from x_digest import search_feed
 from x_digest.xueqiu import fetch_articles
 
 
@@ -36,17 +34,6 @@ def main():
               "xueqiu": {"verified_articles": len(snow.articles), "link_candidates": len(links),
                          "diagnostics": snow.diagnostics, "public_search": feed.diagnostics},
               "model_called": False, "mail_sent": False}
-    if not feed.urls:
-        records, code = search_feed._fetch(search_feed._QUERIES[0])
-        samples = []
-        for record in records[:6]:
-            try:
-                parsed = urlsplit(record.get("url", ""))
-                samples.append({"scheme": parsed.scheme, "host": parsed.hostname,
-                                "path": parsed.path[:180], "title": str(record.get("title", ""))[:150]})
-            except ValueError:
-                continue
-        report["public_search_samples"] = {"status": code, "results": samples}
     (preview / "source-report.json").write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
     print(json.dumps(report, ensure_ascii=False, indent=2))
     print('::notice title=Source access report::' + json.dumps(report, separators=(',', ':')))

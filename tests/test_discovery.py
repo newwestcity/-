@@ -189,54 +189,7 @@ class DiscoverySourceRoutingTests(unittest.TestCase):
                  "discovery_basis": "search_metadata", "discovered_at": NOW.isoformat()}
                 for number in range(1, count + 1)]
 
-    def test_sufficient_feed_skips_billed_search_and_invalid_config_skips_both(self):
-        candidates = self.candidates(3, label="搜索标题")
-        feed = discovery.XueqiuDiscoveryResult([item["url"] for item in candidates],
-            {"feed_requests": 2, "feeds_completed": 2}, candidates)
-        with patch("x_digest.search_feed.discover_xueqiu_feed", return_value=feed) as read_feed, \
-             patch.object(discovery, "discover_xueqiu") as relay:
-            result = self.call()
-        read_feed.assert_called_once_with(now=NOW, seen_ids=set())
-        relay.assert_not_called()
-        self.assertEqual(result.candidates, candidates)
-        self.assertEqual(result.diagnostics["search_requests"], 0)
-        self.assertEqual(result.diagnostics["metadata_titled_candidates"], 3)
-        with patch("x_digest.search_feed.discover_xueqiu_feed") as read_feed, \
-             patch.object(discovery, "discover_xueqiu") as relay:
-            with self.assertRaises(ProviderError):
-                self.call(api_key="")
-        read_feed.assert_not_called()
-        relay.assert_not_called()
 
-    def test_insufficient_feed_merges_unique_links_prefers_feed_titles_and_reports_failure(self):
-        feed_candidates = self.candidates(2, label="RSS原始标题")
-        relay_candidates = self.candidates(15, label="联网来源标题")
-        feed = discovery.XueqiuDiscoveryResult([item["url"] for item in feed_candidates],
-            {"feed_requests": 2, "feeds_completed": 2}, feed_candidates)
-        relay = discovery.XueqiuDiscoveryResult([item["url"] for item in relay_candidates],
-            {"search_requests": 2, "searches_completed": 1}, relay_candidates)
-        with patch("x_digest.search_feed.discover_xueqiu_feed", return_value=feed), \
-             patch.object(discovery, "discover_xueqiu", return_value=relay) as search:
-            result = self.call()
-        search.assert_called_once()
-        self.assertEqual(result.urls, [item["url"] for item in relay_candidates[:12]])
-        self.assertEqual(len(set(result.urls)), 12)
-        self.assertEqual(result.candidates[:2], feed_candidates)
-        self.assertEqual(result.diagnostics["metadata_titled_candidates"], 12)
-        self.assertEqual(result.diagnostics["feed_feeds_completed"], 2)
-        self.assertEqual(result.diagnostics["searches_completed"], 1)
-
-        failed_feed = discovery.XueqiuDiscoveryResult([], {"feeds_completed": 0, "connection_failed": 2})
-        failed_relay = discovery.XueqiuDiscoveryResult([], {"search_requests": 2, "searches_completed": 0,
-                                                           "connection_failed": 2})
-        with patch("x_digest.search_feed.discover_xueqiu_feed", return_value=failed_feed), \
-             patch.object(discovery, "discover_xueqiu", return_value=failed_relay):
-            result = self.call()
-        self.assertEqual((result.urls, result.candidates), ([], []))
-        self.assertEqual(result.diagnostics["metadata_titled_candidates"], 0)
-        self.assertEqual(result.diagnostics["searches_completed"], 0)
-        self.assertEqual(result.diagnostics["feed_connection_failed"], 2)
-        self.assertEqual(result.diagnostics["connection_failed"], 2)
 
 
 if __name__ == "__main__":

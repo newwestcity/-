@@ -240,11 +240,12 @@ class CheckConnectionTests(unittest.TestCase):
         self.opener.open.assert_called_once()
 
     def test_upstream_failure_exposes_only_bounded_redacted_json_detail(self):
-        body = BytesIO(json.dumps({"error": {"message": "upstream unavailable " + self.key}}).encode())
+        body = BytesIO(json.dumps({"error": {"message": "获取分组 GPT 下模型 " + self.key + " 的可用渠道失败: temporarily_unavailable"}}).encode())
         self.opener.open.side_effect = HTTPError("https://private.test/", 500, self.key, {}, body)
         self.assertEqual(self.run_check("responses-search"), 1)
         self.assertEqual(self.report()["http_status"], 500)
-        self.assertIn("upstream unavailable", self.report()["provider_error_hint"])
+        self.assertEqual(self.report()["error_category"], "no_available_model_channel")
+        self.assertIn("temporarily_unavailable", self.report()["provider_error_hint"])
         self.assert_private("private.test")
         self.opener.open.assert_called_once()
 
