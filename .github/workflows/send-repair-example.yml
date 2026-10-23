@@ -34,9 +34,8 @@ jobs:
           python - <<'PY'
           import json
           from pathlib import Path
-          import subprocess
           source=json.loads(Path('.local/example-source.json').read_text())
-          expected=subprocess.check_output(['git','rev-parse','bfd96ed'],text=True).strip()
+          expected='bfd96edfd9885141177b92e0fa946c8fbba66f6d'
           assert source['headSha']==expected and source['headBranch']=='main'
           assert source['conclusion']=='success' and source['status']=='completed'
           assert source['workflowName']=='搜索来源修复验证'
