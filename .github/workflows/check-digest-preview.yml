@@ -1,5 +1,8 @@
 name: 阅读与项目完整预览
 on:
+  push:
+    branches: [main]
+    paths: ['.github/workflows/check-digest-preview.yml']
   workflow_dispatch:
     inputs:
       edition:
@@ -15,7 +18,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        edition: ${{ inputs.edition == 'snowball' && fromJSON('["snowball"]') || inputs.edition == 'weekly' && fromJSON('["weekly"]') || inputs.edition == 'daily' && fromJSON('["daily"]') || fromJSON('["daily","weekly"]') }}
+        edition: ${{ github.event_name == 'push' && fromJSON('["snowball"]') || inputs.edition == 'snowball' && fromJSON('["snowball"]') || inputs.edition == 'weekly' && fromJSON('["weekly"]') || inputs.edition == 'daily' && fromJSON('["daily"]') || fromJSON('["daily","weekly"]') }}
     runs-on: ubuntu-latest
     timeout-minutes: 25
     env:

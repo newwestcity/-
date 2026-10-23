@@ -13,7 +13,7 @@ import re
 import ssl
 import time
 from urllib import error, request
-from urllib.parse import urlencode
+from urllib.parse import urlencode, urlsplit
 from xml.etree import ElementTree
 
 from .discovery import XueqiuDiscoveryResult, _SEEN, _title
@@ -23,9 +23,10 @@ from .xueqiu import canonical_article_url
 REQUEST_TIMEOUT = 15
 MAX_RESPONSE_BYTES = 512 * 1024
 MAX_CANDIDATES = 12
+_OFFICIAL_HOSTS = {"xueqiu.com", "www.xueqiu.com"}
 _QUERIES = (
-    'site:xueqiu.com ("价值投资" OR "安全边际") 长文',
-    'site:xueqiu.com ("企业经营" OR "财报分析" OR "估值方法")',
+    "site:xueqiu.com 价值投资",
+    "site:xueqiu.com 财报分析",
 )
 
 
@@ -36,6 +37,32 @@ class _FeedError(ValueError):
 class _NoRedirects(request.HTTPRedirectHandler):
     def redirect_request(self, req, fp, code, msg, headers, newurl):
         return None
+
+
+def _feed_url(value: object) -> tuple[str, bool]:
+    """Upgrade an official HTTP identity without following its source URL."""
+    try:
+        parsed = urlsplit(value.strip()) if isinstance(value, str) else None
+    except ValueError:
+        parsed = None
+    if parsed is None or parsed.scheme not in {"http", "https"}:
+        raise _FeedError("invalid_url_scheme")
+    if parsed.netloc.lower() not in _OFFICIAL_HOSTS:
+        raise _FeedError("invalid_url_host")
+    upgraded = parsed.scheme == "http"
+    return parsed._replace(scheme="https").geturl(), upgraded
+
+
+def _rejection_reason(value: object) -> str:
+    """Return one fixed URL-shape diagnostic; never decode tracking links."""
+    try:
+        normalised, _ = _feed_url(value)
+        canonical_article_url(normalised)
+    except _FeedError as exc:
+        return str(exc)
+    except (ValueError, TypeError):
+        return "invalid_article_path"
+    return ""
 
 
 def _read(response, deadline: float) -> bytes:
@@ -88,7 +115,8 @@ def _parse(raw: bytes) -> list[dict]:
 
 def _fetch(query: str) -> tuple[list[dict], str]:
     # The endpoint and host are fixed locally; returned links are never fetched.
-    endpoint = "https://www.bing.com/search?" + urlencode({"format": "rss", "q": query})
+    endpoint = "https://www.bing.com/search?" + urlencode(
+        {"format": "rss", "q": query, "mkt": "zh-CN", "setlang": "zh-hans"})
     deadline = time.monotonic() + REQUEST_TIMEOUT
     try:
         opener = request.build_opener(_NoRedirects(), request.HTTPSHandler(context=ssl.create_default_context()))
@@ -117,6 +145,8 @@ def discover_xueqiu_feed(*, now: datetime, seen_ids: set[str]) -> XueqiuDiscover
             or any(not isinstance(value, str) or not _SEEN.fullmatch(value) for value in seen_ids)):
         raise ValueError("Invalid reading history IDs")
     diagnostics = {"feed_requests": 2, "feeds_completed": 0, "invalid_url": 0,
+                   "invalid_url_scheme": 0, "invalid_url_host": 0, "invalid_article_path": 0,
+                   "http_knownhost": 0,
                    "empty_title": 0, "duplicate_url": 0, "seen_url": 0,
                    "candidate_urls": 0, "metadata_titled_candidates": 0}
     with ThreadPoolExecutor(max_workers=2) as executor:
@@ -129,9 +159,16 @@ def discover_xueqiu_feed(*, now: datetime, seen_ids: set[str]) -> XueqiuDiscover
         diagnostics["feeds_completed"] += 1
         for record in records:
             try:
-                url, _, article_id = canonical_article_url(record["url"])
+                normalised, upgraded = _feed_url(record["url"])
+                diagnostics["http_knownhost"] += upgraded
+                url, _, article_id = canonical_article_url(normalised)
+            except _FeedError as exc:
+                diagnostics["invalid_url"] += 1
+                diagnostics[str(exc)] += 1
+                continue
             except (ValueError, TypeError):
                 diagnostics["invalid_url"] += 1
+                diagnostics["invalid_article_path"] += 1
                 continue
             identity = "xueqiu:" + article_id
             if identity in used:

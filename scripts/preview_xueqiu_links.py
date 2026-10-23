@@ -9,7 +9,7 @@ from zoneinfo import ZoneInfo
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from scripts.preview_reading import notice
 from x_digest.app import check_environment, load_settings
-from x_digest.discovery import discover_xueqiu
+from x_digest.discovery import discover_xueqiu_sources as discover_xueqiu
 from x_digest.mail import build_reading_message
 from x_digest.reading import add_xueqiu_links, _credentials
 from x_digest import reading_state

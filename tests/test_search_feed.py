@@ -52,19 +52,42 @@ class FeedTests(unittest.TestCase):
 
     def test_requests_only_fixed_public_https_host_and_never_send_credentials(self):
         _, opener = self.call()
+        queries = set()
         for call in opener.open.call_args_list:
             req = call.args[0]
             parsed = urlsplit(req.full_url)
             self.assertEqual((parsed.scheme, parsed.netloc, parsed.path), ("https", "www.bing.com", "/search"))
             query = parse_qs(parsed.query)
             self.assertEqual(query["format"], ["rss"])
+            self.assertEqual(query["mkt"], ["zh-CN"])
+            self.assertEqual(query["setlang"], ["zh-hans"])
             self.assertIn("site:xueqiu.com", query["q"][0])
+            queries.add(query["q"][0])
             self.assertEqual(req.get_method(), "GET")
             self.assertIsNone(req.data)
             self.assertFalse(any(key.lower() in {"authorization", "cookie"} for key in req.headers))
             self.assertEqual(call.kwargs["timeout"], 15)
+        self.assertEqual(queries, {"site:xueqiu.com 价值投资", "site:xueqiu.com 财报分析"})
         handler = search_feed._NoRedirects()
         self.assertIsNone(handler.redirect_request(None, None, 302, "", {}, "https://evil.example"))
+
+    def test_http_official_identity_is_upgraded_and_invalid_links_have_shape_diagnostics(self):
+        feed = rss("<item><title>企业经营分析</title><link>http://www.xueqiu.com/123/456</link></item>"
+                   "<item><title>bad</title><link>ftp://xueqiu.com/123/456</link></item>"
+                   "<item><title>bad</title><link>http://xueqiu.com.evil.example/123/456</link></item>"
+                   "<item><title>bad</title><link>https://www.bing.com/ck/a</link></item>"
+                   "<item><title>主页</title><link>http://xueqiu.com/u/123</link></item>")
+        result, opener = self.call([feed, rss("")])
+        self.assertEqual(result.urls, [URL])
+        self.assertEqual(result.diagnostics["http_knownhost"], 2)
+        self.assertEqual(result.diagnostics["invalid_url"], 4)
+        self.assertEqual(result.diagnostics["invalid_url_scheme"], 1)
+        self.assertEqual(result.diagnostics["invalid_url_host"], 2)
+        self.assertEqual(result.diagnostics["invalid_article_path"], 1)
+        self.assertEqual(search_feed._rejection_reason("https://xueqiu.com/u/123"), "invalid_article_path")
+        self.assertEqual(search_feed._rejection_reason("http://xueqiu.com/123/456"), "")
+        for call in opener.open.call_args_list:
+            self.assertEqual(urlsplit(call.args[0].full_url).netloc, "www.bing.com")
 
     def test_seen_duplicates_empty_titles_and_limit_are_enforced(self):
         items = "<item><title> </title><link>https://xueqiu.com/123/999</link></item>" + "".join(

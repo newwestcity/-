@@ -133,7 +133,7 @@ class DiscoveryTests(unittest.TestCase):
         _, opener = self.call()
         payloads = [json.loads(call.args[0].data) for call in opener.open.call_args_list]
         for call, payload in zip(opener.open.call_args_list, payloads):
-            self.assertEqual(call.kwargs["timeout"], 90)
+            self.assertEqual(call.kwargs["timeout"], 180)
             self.assertEqual(call.args[0].full_url, "https://relay.example/v1/responses")
             self.assertEqual(payload["tools"][0]["filters"]["allowed_domains"], ["xueqiu.com"])
             self.assertEqual(payload["max_tool_calls"], 1)
