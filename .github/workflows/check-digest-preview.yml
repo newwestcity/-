@@ -17,10 +17,11 @@ jobs:
       matrix:
         edition: ${{ inputs.edition == 'snowball' && fromJSON('["snowball"]') || inputs.edition == 'weekly' && fromJSON('["weekly"]') || inputs.edition == 'daily' && fromJSON('["daily"]') || fromJSON('["daily","weekly"]') }}
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    timeout-minutes: 35
     env:
       DIGEST_API_BASE: ${{ vars.DIGEST_API_BASE || 'https://n.tokeness.dev/v1' }}
       DIGEST_MODEL: ${{ vars.DIGEST_MODEL || 'gpt-6-luna' }}
+      DIGEST_SEARCH_MODEL: ${{ vars.DIGEST_SEARCH_MODEL || 'gpt-5.6-luna' }}
       DIGEST_API_KEY: ${{ secrets.DIGEST_API_KEY }}
       SMTP_USERNAME: preview@example.invalid
       GH_TOKEN: ${{ github.token }}

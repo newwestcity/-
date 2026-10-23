@@ -10,11 +10,15 @@ jobs:
   routes:
     if: github.event_name == 'workflow_dispatch' || contains(github.event.head_commit.message, '[probe-search-repair]')
     runs-on: ubuntu-latest
-    timeout-minutes: 4
+    timeout-minutes: 35
     env:
       DIGEST_API_BASE: ${{ vars.DIGEST_API_BASE || 'https://n.tokeness.dev/v1' }}
       DIGEST_API_KEY: ${{ secrets.DIGEST_API_KEY }}
       DIGEST_SEARCH_MODEL: gpt-5.6-luna
+      DIGEST_MODEL: ${{ vars.DIGEST_MODEL || 'gpt-6-luna' }}
+      SMTP_USERNAME: preview@example.invalid
+      GH_TOKEN: ${{ github.token }}
+      EDITION: daily
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
@@ -22,10 +26,32 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
         with:
           python-version: '3.12'
-      - name: 串行验证目录明确支持的搜索路由（仅两次请求）
-        run: python scripts/probe_verified_search.py
+      - name: 从真实账本加载去重记录（只读）
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          from x_digest.delivery_ledger import open_ledger
+          from x_digest.reading_state import save_state
+          ledger = open_ledger({'version':2,'deliveries':[]},allow_create=False)
+          save_state(Path('.local/reading-state.json'),ledger.history)
+          print('::notice title=Repair history::durable_history_loaded=true;mail_sent=false')
+          PY
+      - name: 使用正确搜索模型完成整套日刊预览
+        run: python scripts/preview_reading.py
+      - name: 保存合格阅读和可复用的核验快照
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: repaired-daily-preview
+          path: |
+            .local/preview/digest.html
+            .local/reading-audit.json
+            .local/reading-reserve.json
+            .local/status-report.json
+          retention-days: 7
+          if-no-files-found: ignore
   public:
-    if: false # 六个公开来源已检查，本轮不重复
+    if: contains(github.event.head_commit.message, '[probe-search-repair]')
     runs-on: ubuntu-latest
     timeout-minutes: 4
     steps:
@@ -35,5 +61,5 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
         with:
           python-version: '3.12'
-      - name: 验证六个公开搜索来源（正常匿名访问，不绕过挑战）
-        run: python scripts/probe_public_search.py
+      - name: 验证官方公开时间线（正常匿名访问，不绕过挑战）
+        run: python scripts/probe_official_timelines.py

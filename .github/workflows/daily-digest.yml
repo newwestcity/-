@@ -60,10 +60,11 @@ jobs:
       max-parallel: 1 # 两期串行读写同一份投递历史
       matrix: ${{ fromJSON(needs.tests.outputs.matrix) }}
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    timeout-minutes: 35 # 搜索共用单槽，覆盖有界最坏耗时及编辑阶段
     env:
       DIGEST_API_BASE: ${{ vars.DIGEST_API_BASE || 'https://n.tokeness.dev/v1' }}
       DIGEST_MODEL: ${{ vars.DIGEST_MODEL || 'gpt-6-luna' }}
+      DIGEST_SEARCH_MODEL: ${{ vars.DIGEST_SEARCH_MODEL || 'gpt-5.6-luna' }}
       DIGEST_API_KEY: ${{ secrets.DIGEST_API_KEY }}
       SMTP_USERNAME: ${{ vars.SMTP_USERNAME }}
       SMTP_AUTH_CODE: ${{ secrets.SMTP_AUTH_CODE }}

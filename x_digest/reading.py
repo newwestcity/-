@@ -14,7 +14,7 @@ import re
 import smtplib
 from zoneinfo import ZoneInfo
 
-from .app import ConfigurationError, check_environment, delivery_lock
+from .app import ConfigurationError, check_environment, delivery_lock, reading_search_model
 from . import editorial, reading_state
 from .discovery import discover_xueqiu
 from .discovery import XueqiuDiscoveryResult
@@ -32,6 +32,10 @@ FINANCE_CATEGORIES = ["价值投资", "企业经营", "财务与估值", "行业
 def _credentials():
     return {"base_url": os.environ["DIGEST_API_BASE"], "api_key": os.environ["DIGEST_API_KEY"],
             "model": os.environ["DIGEST_MODEL"]}
+
+
+def _search_credentials():
+    return {**_credentials(), "model": reading_search_model()}
 
 
 def _editor_code(error):
@@ -180,12 +184,13 @@ def add_xueqiu_links(items, *, candidates, outcomes, seen, settings, candidate_l
 
 def _daily(settings, seen, now):
     credentials = _credentials()
+    search_credentials = _search_credentials()
     diagnostics, candidates = {}, []
     source_status = {"X": "no_candidates", "雪球": "no_candidates"}
     with ThreadPoolExecutor(max_workers=2) as executor:
-        x_future = executor.submit(search_by_category, **credentials, settings=settings,
+        x_future = executor.submit(search_by_category, **search_credentials, settings=settings,
                                   seen_ids={v[2:] for v in seen if v.startswith("x:")}, now=now)
-        snow_future = executor.submit(discover_xueqiu, **credentials, now=now, seen_ids=seen)
+        snow_future = executor.submit(discover_xueqiu, **search_credentials, now=now, seen_ids=seen)
         try:
             search_result = x_future.result()
             urls = search_result.cited_urls
@@ -372,7 +377,7 @@ def run_reading(settings: dict, *, work_dir: Path, send: bool, edition="daily", 
             return {"status": "already_sent", "edition": edition, "period": period}
         if ledger:
             ledger.check_available(edition=edition, period=period)
-        missing = check_environment(send=send)
+        missing = check_environment(send=send, reading=True)
         if missing:
             raise ConfigurationError("缺少安全配置：" + ", ".join(missing))
         seen = reading_state.seen_ids(state, today=now.date(), history_days=settings["reading"]["history_days"])

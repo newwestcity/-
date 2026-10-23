@@ -18,6 +18,7 @@ import unicodedata
 from urllib import error, request
 
 from .provider import ProviderError, _NoRedirects, validate_configuration
+from .search_gate import search_request_slot
 from .xueqiu import canonical_article_url
 
 
@@ -123,8 +124,9 @@ def _one(endpoint: str, api_key: str, payload: dict) -> tuple[list[dict], str]:
                               headers={"Authorization": "Bearer " + api_key,
                                        "Content-Type": "application/json", "Accept": "application/json"})
         opener = request.build_opener(_NoRedirects(), request.HTTPSHandler(context=ssl.create_default_context()))
-        with opener.open(req, timeout=REQUEST_TIMEOUT) as response:
-            raw = response.read(MAX_RESPONSE_BYTES + 1)
+        with search_request_slot():
+            with opener.open(req, timeout=REQUEST_TIMEOUT) as response:
+                raw = response.read(MAX_RESPONSE_BYTES + 1)
         if len(raw) > MAX_RESPONSE_BYTES:
             return [], "response_too_large"
         try:

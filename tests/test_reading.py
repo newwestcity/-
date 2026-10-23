@@ -108,6 +108,40 @@ class ReadingTests(unittest.TestCase):
         self.assertTrue({p["id"] for p in items} <= {p["id"] for p in xs + snow})
         self.send.assert_not_called()
 
+    def test_search_models_are_separate_from_article_and_weekly_editing(self):
+        xs, snow = [article("X", category="AI")], [article(number=10)]
+        def edit(**kwargs):
+            return kwargs["items"]
+        for override in (None, "explicit-response-model"):
+            with self.subTest(search_override=override), \
+                 patch.dict("os.environ", {} if override is None else {"DIGEST_SEARCH_MODEL": override}), \
+                 patch("x_digest.reading.search_by_category", return_value=SimpleNamespace(
+                     cited_urls=[xs[0]["url"]])) as x_search, \
+                 patch("x_digest.reading.fetch_verified_posts", return_value=xs), \
+                 patch("x_digest.reading.discover_xueqiu", return_value=SimpleNamespace(
+                     urls=[snow[0]["url"]], diagnostics={"searches_completed": 1})) as snow_search, \
+                 patch("x_digest.reading.fetch_articles", return_value=SimpleNamespace(articles=snow, diagnostics={})), \
+                 patch("x_digest.reading.editorial.curate_articles", side_effect=edit) as article_editor, \
+                 patch("x_digest.reading.fetch_projects", return_value=SimpleNamespace(
+                     projects=[project()], diagnostics={"searches_succeeded": 1})), \
+                 patch("x_digest.reading.editorial.curate_projects", return_value=[project()]) as project_editor:
+                self.assertEqual(self.run_edition()["status"], "preview")
+                self.assertEqual(self.run_edition(edition="weekly")["status"], "preview")
+            expected = override or "gpt-5.6-luna"
+            self.assertEqual(x_search.call_args.kwargs["model"], expected)
+            self.assertEqual(snow_search.call_args.kwargs["model"], expected)
+            self.assertEqual({call.kwargs["model"] for call in article_editor.call_args_list}, {ENV["DIGEST_MODEL"]})
+            self.assertEqual(project_editor.call_args.kwargs["model"], ENV["DIGEST_MODEL"])
+
+    def test_invalid_explicit_search_model_stops_before_any_source_request(self):
+        for value in ("", "bad\r\nmodel", "bad\tmodel"):
+            with self.subTest(model=value), patch.dict("os.environ", {"DIGEST_SEARCH_MODEL": value}), \
+                 patch("x_digest.reading._daily") as daily:
+                with self.assertRaises((ConfigurationError, ProviderError)):
+                    self.run_edition()
+                daily.assert_not_called()
+        self.send.assert_not_called()
+
     def test_already_sent_returns_before_credentials_collectors_or_mail(self):
         with patch("x_digest.reading._daily", return_value=edition_result([article()])) as daily:
             self.assertEqual(self.run_edition(send=True)["status"], "smtp_accepted")

@@ -38,6 +38,7 @@ jobs:
     env:
       DIGEST_API_BASE: ${{ inputs.api_base }}
       DIGEST_MODEL: ${{ inputs.model }}
+      DIGEST_SEARCH_MODEL: ${{ vars.DIGEST_SEARCH_MODEL || 'gpt-5.6-luna' }}
       DIGEST_API_KEY: ${{ secrets.DIGEST_API_KEY }}
       CHECK_MODE: ${{ inputs.mode }}
     steps:

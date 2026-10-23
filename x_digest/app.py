@@ -22,6 +22,14 @@ class ConfigurationError(ValueError):
     pass
 
 
+DEFAULT_SEARCH_MODEL = "gpt-5.6-luna"
+
+
+def reading_search_model() -> str:
+    """Keep Responses routing separate from the ordinary editing model."""
+    return os.environ.get("DIGEST_SEARCH_MODEL", DEFAULT_SEARCH_MODEL)
+
+
 def _source_inventory(cited_urls, *, seen_ids, settings, now):
     counts = dict.fromkeys(('citation_recent', 'citation_old', 'citation_future',
                             'citation_seen', 'citation_blocked', 'citation_invalid'), 0)
@@ -98,7 +106,7 @@ def load_settings(path: Path) -> dict:
     return value
 
 
-def check_environment(*, send: bool) -> list[str]:
+def check_environment(*, send: bool, reading: bool = False) -> list[str]:
     required = ["DIGEST_API_BASE", "DIGEST_MODEL", "DIGEST_API_KEY", "SMTP_USERNAME"]
     if send:
         required.append("SMTP_AUTH_CODE")
@@ -107,6 +115,12 @@ def check_environment(*, send: bool) -> list[str]:
         from .provider import validate_configuration
         validate_configuration(base_url=os.environ["DIGEST_API_BASE"], api_key=os.environ["DIGEST_API_KEY"],
                                model=os.environ["DIGEST_MODEL"])
+        if reading:
+            search_model = reading_search_model()
+            if any(ord(char) < 32 for char in search_model):
+                raise ConfigurationError("搜索模型名称格式无效")
+            validate_configuration(base_url=os.environ["DIGEST_API_BASE"], api_key=os.environ["DIGEST_API_KEY"],
+                                   model=search_model)
         sender = os.environ["SMTP_USERNAME"]
         # Reuse the mailer's strict header validation before a billed request.
         # This temporary message is never saved or sent.
@@ -253,7 +267,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         settings = load_settings(args.settings)
         if args.check:
-            missing = check_environment(send=args.send)
+            missing = check_environment(send=args.send, reading="reading" in settings)
             if missing:
                 print("缺少配置：" + ", ".join(missing), file=sys.stderr)
                 return 2

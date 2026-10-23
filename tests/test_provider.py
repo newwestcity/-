@@ -4,7 +4,7 @@ import io
 import json
 import socket
 import ssl
-from threading import Barrier, Lock
+from threading import Lock
 import unittest
 from unittest.mock import Mock, patch
 from urllib import error, request
@@ -326,12 +326,11 @@ class CategorySearchTests(unittest.TestCase):
                                            model="configured-search-model", settings=settings or SETTINGS,
                                            seen_ids={"789"}, now=NOW)
 
-    def test_each_category_gets_one_source_only_bounded_request_with_two_workers(self):
+    def test_each_category_gets_one_source_only_request_through_the_single_slot(self):
         categories = ["科技", "AI", "股市", "投资", "读书", "学生羊毛"]
         settings = dict(SETTINGS, categories=categories, max_tool_calls=6)
         original = json.loads(json.dumps(settings))
         lock = Lock()
-        pair = Barrier(2, timeout=5)
         active = 0
         peak = 0
         calls = []
@@ -346,7 +345,6 @@ class CategorySearchTests(unittest.TestCase):
                 peak = max(peak, active)
                 calls.append((category, payload, timeout))
             try:
-                pair.wait()
                 index = categories.index(category)
                 url = f"https://x.com/author{index}/status/{12345 + index}"
                 data = response_data()
@@ -363,7 +361,7 @@ class CategorySearchTests(unittest.TestCase):
         opener.open.side_effect = respond
         with patch.object(provider.request, "build_opener", return_value=opener):
             result = self.call(settings)
-        self.assertEqual(peak, 2)
+        self.assertEqual(peak, 1)
         self.assertEqual(opener.open.call_count, len(categories))
         self.assertCountEqual([category for category, _, _ in calls], categories)
         self.assertEqual(result.posts, [])

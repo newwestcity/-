@@ -43,6 +43,15 @@ class AppTests(unittest.TestCase):
         self.assertTrue((self.work / "preview/digest.html").exists())
         self.assertFalse((self.work / "state.json").exists())
 
+    def test_legacy_digest_ignores_separate_reading_search_model(self):
+        with patch.dict("os.environ", {"DIGEST_SEARCH_MODEL": "unused\r\ninvalid"}), \
+             patch("x_digest.provider.search_by_category", return_value=found()) as search, \
+             patch("x_digest.app.send_message") as send:
+            result = run_digest(self.settings, work_dir=self.work, send=False, now=NOW)
+        self.assertEqual(result["status"], "preview")
+        self.assertEqual(search.call_args.kwargs["model"], ENV["DIGEST_MODEL"])
+        send.assert_not_called()
+
     def test_successful_delivery_is_recorded_and_rerun_does_not_search_or_send(self):
         with patch("x_digest.provider.search_by_category", return_value=found()) as search, patch("x_digest.app.send_message") as send:
             first = run_digest(self.settings, work_dir=self.work, send=True, now=NOW)
