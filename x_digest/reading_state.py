@@ -1,4 +1,4 @@
-"""Bounded delivery history for daily reading mail and weekly project mail.
+"""Bounded delivery history for daily, weekly and explicit example mail.
 
 Only call ``record_delivery`` after SMTP accepts a message. Callers must hold a
 lock around reading, sending, and recording; atomic replacement is not a lock.
@@ -28,7 +28,7 @@ _MAX_ITEMS = 100
 _MAX_HISTORY_DAYS = 180
 _MISSING = object()
 
-Edition = Literal["daily", "weekly"]
+Edition = Literal["daily", "weekly", "example"]
 
 
 def _parse_date(value: str) -> Date:
@@ -41,7 +41,7 @@ def _parse_date(value: str) -> Date:
 
 
 def _validate_period(edition: str, period: str) -> None:
-    if edition in {"daily", "legacy-x"}:
+    if edition in {"daily", "example", "legacy-x"}:
         _parse_date(period)
     elif edition == "weekly":
         match = _WEEK.fullmatch(period) if isinstance(period, str) else None
@@ -56,8 +56,8 @@ def _validate_period(edition: str, period: str) -> None:
 
 
 def _validate_public_period(edition: str, period: str) -> None:
-    if not isinstance(edition, str) or edition not in {"daily", "weekly"}:
-        raise ValueError("edition must be daily or weekly")
+    if not isinstance(edition, str) or edition not in {"daily", "weekly", "example"}:
+        raise ValueError("edition must be daily, weekly or example")
     _validate_period(edition, period)
 
 
@@ -114,8 +114,8 @@ def _validated_state(state: dict) -> dict:
             raise ValueError("Unsupported delivery edition")
         _validate_period(edition, period)
         day = _parse_date(entry.get("date"))
-        if edition in {"daily", "legacy-x"} and period != day.isoformat():
-            raise ValueError("Daily or legacy period must match delivery date")
+        if edition in {"daily", "example", "legacy-x"} and period != day.isoformat():
+            raise ValueError("Daily, example or legacy period must match delivery date")
         if edition == "weekly" and period != f"{day.isocalendar().year:04d}-W{day.isocalendar().week:02d}":
             raise ValueError("Weekly period must match the delivery date's ISO week")
         _validate_sent_at(entry.get("sent_at"))

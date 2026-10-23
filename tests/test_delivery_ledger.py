@@ -175,6 +175,21 @@ class LedgerTests(unittest.TestCase):
         with self.assertRaisesRegex(LedgerError, "已记录"):
             restored.reserve(**entry())
 
+    def test_example_and_daily_same_day_have_independent_durable_reservations(self):
+        ledger = open_ledger(EMPTY)
+        example = entry(edition="example", ids=["xueqiu:234"])
+        daily = entry()
+        ledger.reserve(**example)
+        ledger.complete(state(example))
+        ledger.reserve(**daily)
+        ledger.complete(state(example, daily))
+        restored = open_ledger(EMPTY)
+        self.assertEqual(restored.history, state(example, daily))
+        self.assertEqual(restored.pending_ids(today=date(2026, 10, 23)), set())
+        for repeated in (example, daily):
+            with self.subTest(edition=repeated["edition"]), self.assertRaisesRegex(LedgerError, "已记录"):
+                restored.reserve(**repeated)
+
     def test_concurrent_reservation_uses_compare_and_swap_and_never_overwrites(self):
         first = open_ledger(EMPTY)
         second = open_ledger(EMPTY)

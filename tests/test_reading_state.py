@@ -62,6 +62,33 @@ class ReadingStateTests(unittest.TestCase):
                          {"x:201", "xueqiu:201", "github:Owner/Repo"})
         self.assertEqual(load_state(self.path), result)
 
+    def test_example_has_its_own_daily_slot_but_participates_in_content_history(self):
+        example = self.record(edition="example", item_ids=["x:301", "xueqiu:302"])
+        self.assertTrue(already_sent(example, edition="example", period="2026-10-20"))
+        self.assertFalse(already_sent(example, edition="daily", period="2026-10-20"))
+        self.assertFalse(already_sent(example, edition="daily", period="2026-10-21"))
+        self.assertEqual(seen_ids(example, today=date(2026, 10, 21)), {"x:301", "xueqiu:302"})
+        both = self.record(example, item_ids=["x:401"])
+        self.assertTrue(already_sent(both, edition="daily", period="2026-10-20"))
+        self.assertTrue(already_sent(both, edition="example", period="2026-10-20"))
+        self.assertEqual(seen_ids(both, today=date(2026, 10, 21)), {"x:301", "xueqiu:302", "x:401"})
+        before = self.path.read_bytes()
+        with self.assertRaises(ValueError):
+            self.record(both, edition="example", item_ids=["x:501"])
+        self.assertEqual(self.path.read_bytes(), before)
+
+    def test_example_requires_exact_date_period_and_rejects_unlisted_editions(self):
+        for edition, period in [("example", "2026-W43"), ("example", "2026-10-21"),
+                                ("example", "2026-2-1"), ("example-extra", "2026-10-20"),
+                                ("manual", "2026-10-20")]:
+            with self.subTest(edition=edition, period=period), self.assertRaises(ValueError):
+                self.record(edition=edition, period=period)
+            self.assertFalse(self.path.exists())
+        invalid = state(delivery("2026-10-20", edition="example", period="2026-10-21"))
+        self.path.write_text(json.dumps(invalid))
+        with self.assertRaises(ValueError):
+            load_state(self.path)
+
     def test_invalid_ids_never_create_history(self):
         invalid = [["x:0"], ["x:001"], ["x:-1"], ["x:1" + "2" * 25], [1],
                    ["other:1"], ["xueqiu:abc"], ["github:org"], ["github:org/../repo"],
