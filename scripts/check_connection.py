@@ -184,7 +184,7 @@ def _responses_payload(model: str) -> dict:
         "input": "请实际搜索过去7天 X/Twitter 上 OpenAI、AnthropicAI、GoogleDeepMind 等账号有学习价值的 AI/科技原帖，给出至少一条 /status/ 原帖链接与来源引用；找不到就说明，不要编造链接。",
         "tools": [{"type": "web_search", "filters": {"allowed_domains": ["x.com", "twitter.com"]}}],
         "tool_choice": "required", "include": ["web_search_call.action.sources"],
-        "max_tool_calls": 1, "max_output_tokens": 1500,
+        "max_output_tokens": 1500,
     }
 
 

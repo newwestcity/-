@@ -200,7 +200,6 @@ def _payload(model: str, settings: dict, seen_ids: set[str], now: datetime) -> d
         "text": {"format": {"type": "json_schema", "name": "daily_x_digest", "strict": True,
                             "schema": _schema(categories)}},
         "max_output_tokens": max_output,
-        "max_tool_calls": max_tools,
     }
 
 
@@ -246,7 +245,6 @@ def _retrieval_payload(model: str, settings: dict, seen_ids: set[str], now: date
         "tools": validated["tools"],
         "tool_choice": "required",
         "include": validated["include"],
-        "max_tool_calls": 1,
         "max_output_tokens": min(validated["max_output_tokens"], 1500),
     }
 
@@ -429,7 +427,9 @@ def search_by_category(
 ) -> SearchResult:
     """Search each category once, using at most two concurrent requests.
 
-    Each request permits one search tool call. Validate the complete budget and
+    Each request asks for one search. The relay does not accept max_tool_calls;
+    this setting bounds local requests, not the server's internal tool calls.
+    Validate the complete budget and
     configuration before starting, and keep successful results in category order.
     """
     validate_configuration(base_url=base_url, api_key=api_key, model=model)

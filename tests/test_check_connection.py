@@ -176,7 +176,7 @@ class CheckConnectionTests(unittest.TestCase):
         req = self.opener.open.call_args.args[0]
         self.assertEqual(req.full_url, helper.DEFAULT_API_BASE + '/responses')
         self.assertEqual(req.get_method(), 'POST')
-        self.assertEqual(json.loads(req.data)['max_tool_calls'], 1)
+        self.assertNotIn('max_tool_calls', json.loads(req.data))
         self.assert_private()
 
     def test_responses_search_does_not_trust_generated_urls_or_unfinished_tools(self):

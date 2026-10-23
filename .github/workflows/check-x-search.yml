@@ -26,7 +26,7 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
         with:
           python-version: '3.12'
-      - name: 复核一次搜索请求的明确拒绝原因
+      - name: 验证移除不支持参数后的单次搜索
         run: |
           python - <<'PY'
           from datetime import datetime, timezone
@@ -37,7 +37,7 @@ jobs:
           from x_digest.provider import _retrieval_payload
 
           # Ordinary editing already worked; inspect one search request only.
-          check_connection.REQUEST_TIMEOUT = 60
+          check_connection.REQUEST_TIMEOUT = 180
           settings = dict(load_settings(Path('settings.json')), categories=['AI'],
                           target_count=2, max_tool_calls=1, max_output_tokens=3000)
           # Retrieve sources only. Official post reading and Chinese editing

@@ -58,7 +58,7 @@ jobs:
       - name: 实际检索、原文评审与预览（不发邮件）
         if: matrix.edition != 'snowball'
         run: python scripts/preview_reading.py
-      - name: 雪球搜索标题链接预览（未读全文、不评分、不发邮件）
+      - name: 修正接口参数后的雪球标题预览（不评分、不发邮件）
         if: matrix.edition == 'snowball'
         run: python scripts/preview_xueqiu_links.py
       - name: 保存阅读预览

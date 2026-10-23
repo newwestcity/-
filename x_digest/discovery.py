@@ -65,7 +65,6 @@ def _payloads(model: str, now: datetime, seen_ids: set[str]) -> list[dict]:
             "tools": [{"type": "web_search", "filters": {"allowed_domains": ["xueqiu.com"]}}],
             "tool_choice": "required",
             "include": ["web_search_call.action.sources"],
-            "max_tool_calls": 1,
             "max_output_tokens": 1500,
         })
     return payloads

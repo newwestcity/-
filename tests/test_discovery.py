@@ -136,7 +136,7 @@ class DiscoveryTests(unittest.TestCase):
             self.assertEqual(call.kwargs["timeout"], 180)
             self.assertEqual(call.args[0].full_url, "https://relay.example/v1/responses")
             self.assertEqual(payload["tools"][0]["filters"]["allowed_domains"], ["xueqiu.com"])
-            self.assertEqual(payload["max_tool_calls"], 1)
+            self.assertNotIn("max_tool_calls", payload)
             self.assertEqual(payload["max_output_tokens"], 1500)
             self.assertEqual(payload["tool_choice"], "required")
             self.assertEqual(payload["include"], ["web_search_call.action.sources"])

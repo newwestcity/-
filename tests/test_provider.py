@@ -104,7 +104,7 @@ class ProviderTests(unittest.TestCase):
             "allowed_domains": ["x.com", "twitter.com"]}}])
         self.assertEqual(payload["include"], ["web_search_call.action.sources"])
         self.assertFalse(payload["store"])
-        self.assertEqual(payload["max_tool_calls"], 6)
+        self.assertNotIn("max_tool_calls", payload)
         schema = payload["text"]["format"]
         self.assertTrue(schema["strict"])
         self.assertEqual(schema["schema"]["properties"]["posts"]["items"]["properties"]["category"]["enum"],
@@ -210,7 +210,7 @@ class ProviderTests(unittest.TestCase):
         self.assertIn("当前UTC时间：2026-10-20T00:00:00+00:00", payload["input"])
         self.assertIn("after:2026-10-13 before:2026-10-21", payload["input"])
         self.assertIn("只简短列原帖URL", payload["input"])
-        self.assertEqual(payload["max_tool_calls"], 1)
+        self.assertNotIn("max_tool_calls", payload)
         self.assertEqual(payload["max_output_tokens"], 1500)
         self.assertEqual(payload["tool_choice"], "required")
         self.assertEqual(payload["include"], ["web_search_call.action.sources"])
@@ -353,7 +353,7 @@ class CategorySearchTests(unittest.TestCase):
         self.assertEqual(settings, original)
         for _, payload, timeout in calls:
             self.assertEqual(timeout, 120)
-            self.assertEqual(payload["max_tool_calls"], 1)
+            self.assertNotIn("max_tool_calls", payload)
             self.assertEqual(payload["max_output_tokens"], 1500)
             self.assertNotIn("text", payload)
             self.assertIsInstance(payload["input"], str)
