@@ -1,0 +1,56 @@
+name: 投递已生成的阅读升级示范
+on:
+  push:
+    paths: ['.github/workflows/send-reading-example.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: daily-x-digest
+  cancel-in-progress: false
+jobs:
+  deliver:
+    if: github.ref_name == github.event.repository.default_branch
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      GH_TOKEN: ${{ github.token }}
+      SMTP_USERNAME: ${{ vars.SMTP_USERNAME }}
+      SMTP_AUTH_CODE: ${{ secrets.SMTP_AUTH_CODE }}
+      MAIL_TO: ${{ vars.MAIL_TO }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: '3.12'
+      - uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25
+        id: history
+        with:
+          path: |
+            .local/state.json
+            .local/reading-state.json
+          key: reading-history-v2-example-${{ github.run_id }}
+          restore-keys: reading-history-v2-
+      - if: steps.history.outputs.cache-matched-key == ''
+        uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25
+        with:
+          path: .local/state.json
+          key: x-digest-history-v1-migrate-${{ github.run_id }}
+          restore-keys: x-digest-history-v1-
+      - name: 核对并下载本仓库已成功生成的示范
+        run: |
+          test "$(gh api repos/newwestcity/-/actions/runs/39936422873 --jq .head_sha)" = 'ada4b9abe9611dcb982b59f7e965d3ffeacb97f8'
+          test "$(gh api repos/newwestcity/-/actions/runs/39936422873 --jq .conclusion)" = 'success'
+          gh run download 39936422873 --repo newwestcity/- --name reading-preview-snowball --dir .local/sample
+      - name: 发送标题链接示范并记录（不重新搜索或调用模型）
+        run: python scripts/send_reading_example.py
+      - name: 保存已发记录
+        uses: actions/cache/save@caa296126883cff596d87d8935842f9db880ef25
+        with:
+          path: |
+            .local/state.json
+            .local/reading-state.json
+          key: reading-history-v2-${{ github.run_id }}-${{ github.run_attempt }}
