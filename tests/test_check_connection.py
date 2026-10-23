@@ -71,6 +71,17 @@ class CheckConnectionTests(unittest.TestCase):
         self.opener.open.assert_not_called()
         self.assertFalse(self.report_path.exists())
 
+    def test_responses_probe_uses_search_model_while_chat_keeps_editor_model(self):
+        with patch.dict('os.environ', {'DIGEST_MODEL': 'ordinary-only', 'DIGEST_SEARCH_MODEL': 'responses-capable'}):
+            self.run_check('responses-search')
+            payload = json.loads(self.opener.open.call_args.args[0].data)
+            self.assertEqual(payload['model'], 'responses-capable')
+            self.assertTrue(self.opener.open.call_args.args[0].full_url.endswith('/responses'))
+            self.run_check('chat')
+            payload = json.loads(self.opener.open.call_args.args[0].data)
+            self.assertEqual(payload['model'], 'ordinary-only')
+            self.assertTrue(self.opener.open.call_args.args[0].full_url.endswith('/chat/completions'))
+
     def test_missing_key_does_not_make_request(self):
         with patch.dict("os.environ", {}, clear=True):
             self.assertEqual(self.run_check(), 1)

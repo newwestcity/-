@@ -210,20 +210,29 @@ def _retrieval_payload(model: str, settings: dict, seen_ids: set[str], now: date
     """Build a short source-discovery request; editing happens after verification."""
     validated = _payload(model, settings, seen_ids, now)
     utc_now = now.astimezone(timezone.utc)
-    tomorrow = (utc_now + timedelta(days=1)).date().isoformat()
     categories = settings["categories"]
     classic_categories, classic_count = _classic_configuration(settings, categories=categories)
+    topics = {
+        "科技": "开源软件作者关于编程工具、软件工程和技术实践的深入帖子",
+        "AI": "Andrej Karpathy等开发者关于LLM、AI agent和实际构建方法的原始长帖",
+        "股市": "价值投资者关于企业经营、财报、现金流、估值和安全边际的原始分析",
+        "投资": "长期投资者关于复利、风险、认知偏差和投资决策方法的长帖",
+        "读书": "作者与读者关于具体书评、阅读方法和可迁移洞见的长帖",
+        "学生羊毛": "GitHub Education、学生软件优惠和免费课程等大学生仍可参加的权益原始帖子",
+    }
     queries = []
     for category in categories:
         start = utc_now - timedelta(days=3 if category == "学生羊毛" else 7)
-        keywords = _SEARCH_KEYWORDS.get(category, category)
-        queries.append(f"site:x.com {keywords} after:{start.date().isoformat()} before:{tomorrow} inurl:status")
+        window = "过去72小时" if category == "学生羊毛" else "过去7天"
+        topic = topics.get(category, category + "领域原作者有具体论证的长帖")
+        queries.append(f"{category}：寻找{window}（UTC {start.date().isoformat()} 至 {utc_now.date().isoformat()}）"
+                       f"在X/Twitter发布的{topic}。")
     classic = ""
     if classic_categories and classic_count:
         classic = (
             "经典例外：" + json.dumps(classic_categories, ensure_ascii=False)
             + "仅当近期没有合适内容时，才考虑同一次搜索工具自然返回的价值投资原理、长期投资方法或阅读书评旧帖；"
-            "不得移除query的近期日期下界，不得为经典补位增加搜索调用。"
+            "不放宽上述近期检索要求，不得为经典补位增加搜索调用。"
             "旧行情、旧财报时点判断和过期消息不算经典，旧帖不能算近期结果。\n"
         )
     # The complete history is still enforced after source verification. Keep
@@ -245,7 +254,10 @@ def _retrieval_payload(model: str, settings: dict, seen_ids: set[str], now: date
         "model": model,
         "store": False,
         "input": prompt,
-        "tools": validated["tools"],
+        # Hard host/path query operators were returning help/profile/search
+        # pages. Keep discovery broad; metadata parsing and official readers
+        # still enforce canonical post identities, dates and source quality.
+        "tools": [{"type": "web_search"}],
         "tool_choice": "required",
         "include": validated["include"],
         "max_output_tokens": min(validated["max_output_tokens"], 1500),

@@ -227,14 +227,15 @@ class ProviderTests(unittest.TestCase):
         self.assertLess(len(payload["input"]), 2500)
         self.assertNotIn(SECRET, payload["input"])
         self.assertIn("当前UTC时间：2026-10-20T00:00:00+00:00", payload["input"])
-        self.assertIn("after:2026-10-13 before:2026-10-21", payload["input"])
+        self.assertIn("过去7天（UTC 2026-10-13 至 2026-10-20）", payload["input"])
         self.assertIn("只简短列原帖URL", payload["input"])
         self.assertNotIn("max_tool_calls", payload)
         self.assertEqual(payload["max_output_tokens"], 1500)
         self.assertEqual(payload["tool_choice"], "required")
         self.assertEqual(payload["include"], ["web_search_call.action.sources"])
-        self.assertEqual(payload["tools"], [{"type": "web_search", "filters": {
-            "allowed_domains": ["x.com", "twitter.com"]}}])
+        self.assertEqual(payload["tools"], [{"type": "web_search"}])
+        for operator in ("site:", "inurl:", "after:", "before:"):
+            self.assertNotIn(operator, payload["input"])
         self.assertIn(str(1000000000000000000 + 999), payload["input"])
         self.assertNotIn(str(1000000000000000000), payload["input"])
         smaller = provider._retrieval_payload("configured", dict(SETTINGS, max_output_tokens=500), set(), NOW)
@@ -248,19 +249,19 @@ class ProviderTests(unittest.TestCase):
         self.assertIn("旧行情、旧财报时点判断和过期消息不算经典", prompt)
         self.assertIn("旧帖不能算近期结果", prompt)
         self.assertIn("学生羊毛仅限72小时且仍有效", prompt)
-        self.assertIn("after:2026-10-17 before:2026-10-21", prompt)
-        investment_query = next(line for line in prompt.splitlines() if line.startswith("site:x.com (长期投资"))
-        self.assertIn("after:2026-10-13 before:2026-10-21", investment_query)
+        self.assertIn("过去72小时（UTC 2026-10-17 至 2026-10-20）", prompt)
+        investment_query = next(line for line in prompt.splitlines() if line.startswith("投资：寻找"))
+        self.assertIn("过去7天（UTC 2026-10-13 至 2026-10-20）", investment_query)
         self.assertIn("仅当近期没有合适内容时", prompt)
         self.assertIn("不得为经典补位增加搜索调用", prompt)
         self.assertNotIn("可另找", prompt)
         ai_prompt = provider._retrieval_payload("configured", dict(settings, categories=["AI"]), set(), NOW)["input"]
         self.assertNotIn("经典例外", ai_prompt)
-        self.assertIn("after:2026-10-13 before:2026-10-21", ai_prompt)
+        self.assertIn("过去7天（UTC 2026-10-13 至 2026-10-20）", ai_prompt)
         disabled = provider._retrieval_payload("configured", dict(settings, categories=["投资"],
                                                                  classic_categories=[]), set(), NOW)["input"]
-        investment_query = next(line for line in disabled.splitlines() if line.startswith("site:x.com (长期投资"))
-        self.assertIn("after:2026-10-13 before:2026-10-21", investment_query)
+        investment_query = next(line for line in disabled.splitlines() if line.startswith("投资：寻找"))
+        self.assertIn("过去7天（UTC 2026-10-13 至 2026-10-20）", investment_query)
 
     def test_retrieval_flag_is_validated_before_network(self):
         with patch.object(provider.request, "build_opener") as build:

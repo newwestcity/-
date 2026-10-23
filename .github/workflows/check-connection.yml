@@ -4,11 +4,12 @@ on:
   workflow_dispatch:
     inputs:
       mode:
-        description: 'api 读取模型目录；chat 普通对话；search 检索；对话和检索可能计费'
+        description: 'api 模型目录；chat 普通对话；responses-search 生产联网检索；search 旧GLM检索；对话/检索可能计费'
         type: choice
         options:
           - api
           - chat
+          - responses-search
           - search
         default: api
         required: true
@@ -18,9 +19,14 @@ on:
         default: 'https://n.tokeness.dev/v1'
         required: true
       model:
-        description: '服务商示例中的模型名'
+        description: '普通对话模型（旧search模式需改填GLM模型名）'
         type: string
-        default: 'glm-5.3-flashx'
+        default: 'gpt-6-luna'
+        required: true
+      search_model:
+        description: 'Responses联网搜索模型，需支持openai-response路由'
+        type: string
+        default: 'gpt-5.6-luna'
         required: true
 
 permissions:
@@ -38,7 +44,7 @@ jobs:
     env:
       DIGEST_API_BASE: ${{ inputs.api_base }}
       DIGEST_MODEL: ${{ inputs.model }}
-      DIGEST_SEARCH_MODEL: ${{ vars.DIGEST_SEARCH_MODEL || 'gpt-5.6-luna' }}
+      DIGEST_SEARCH_MODEL: ${{ inputs.search_model || vars.DIGEST_SEARCH_MODEL || 'gpt-5.6-luna' }}
       DIGEST_API_KEY: ${{ secrets.DIGEST_API_KEY }}
       CHECK_MODE: ${{ inputs.mode }}
     steps:

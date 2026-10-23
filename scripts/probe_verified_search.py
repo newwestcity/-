@@ -1,4 +1,4 @@
-"""Two serial, explicitly billed source probes using a catalog-verified route."""
+"""Bounded, explicitly billed source probes using a catalog-verified route."""
 from datetime import datetime, timedelta, timezone
 from collections import Counter
 import json
@@ -14,7 +14,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from scripts.check_connection import _request_error_details
 from scripts.probe_search_routes import notice
 from x_digest.discovery import _metadata_records, _title
-from x_digest.provider import _NoRedirects, validate_configuration
+from x_digest.app import load_settings
+from x_digest.provider import _NoRedirects, _retrieval_payload, validate_configuration
 from x_digest.oembed import fetch_verified_posts
 from x_digest.selection import canonical_post_url
 from x_digest.xueqiu import canonical_article_url
@@ -49,6 +50,13 @@ def main():
                    "tool_choice": "required", "include": ["web_search_call.action.sources"], "max_output_tokens": 3000}
         if os.environ.get('PROBE_UNFILTERED') == 'true':
             payload['tools'] = [{'type': 'web_search'}]
+        if source == 'X' and os.environ.get('PROBE_NATURAL') == 'true':
+            category = os.environ.get('PROBE_CATEGORY', 'AI')
+            settings = load_settings(Path('settings.json'))
+            if category not in settings['categories']:
+                raise ValueError('Unknown probe category')
+            settings = dict(settings, categories=[category], classic_categories=[], max_classic_count=0)
+            payload = _retrieval_payload(model, settings, set(), now)
         report = {"source": source, "model": model, "http_status": 0}
         try:
             req = request.Request(endpoint, headers=headers, method='POST', data=json.dumps(payload).encode())

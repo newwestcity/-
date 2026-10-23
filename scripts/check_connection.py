@@ -531,7 +531,8 @@ def main(argv: list[str] | None = None) -> int:
 
     key = os.environ.get("DIGEST_API_KEY", "")
     base = os.environ.get("DIGEST_API_BASE", DEFAULT_API_BASE)
-    model = os.environ.get("DIGEST_MODEL", DEFAULT_MODEL)
+    model = (os.environ.get("DIGEST_SEARCH_MODEL", "gpt-5.6-luna") if args.mode == "responses-search"
+             else os.environ.get("DIGEST_MODEL", DEFAULT_MODEL))
     # Catalog output contains only public IDs from GPT_CANDIDATES; an existing
     # model setting must not turn a valid selected ID into an unusable marker.
     private_values = (key, base) if args.mode == "catalog" else (key, base, model)
