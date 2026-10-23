@@ -3,6 +3,7 @@ from datetime import datetime, timedelta, timezone
 from collections import Counter
 import json
 import os
+import re
 from pathlib import Path
 import sys
 import time
@@ -14,6 +15,7 @@ from scripts.check_connection import _request_error_details
 from scripts.probe_search_routes import notice
 from x_digest.discovery import _metadata_records, _title
 from x_digest.provider import _NoRedirects, validate_configuration
+from x_digest.oembed import fetch_verified_posts
 from x_digest.selection import canonical_post_url
 from x_digest.xueqiu import canonical_article_url
 
@@ -35,7 +37,8 @@ def main():
                ('雪球', 'xueqiu.com', 'site:xueqiu.com 价值投资 企业分析 财报 after:' +
                 (now - timedelta(days=30)).date().isoformat() + ' before:' + tomorrow)]
     if os.environ.get('PROBE_SOURCE') == 'X':
-        queries = [('X', 'x.com', 'site:x.com inurl:status (value investing OR margin of safety OR book review) before:' + tomorrow)]
+        queries = [('X', 'x.com', 'site:twitter.com inurl:status ("value investing" OR "book review") '
+                    '-site:help.twitter.com -site:help.x.com -site:docs.x.com before:' + tomorrow)]
     reports = []
     for source, domain, query in queries:
         started = time.monotonic()
@@ -44,6 +47,8 @@ def main():
                             "X只接受作者/status/数字ID，雪球只接受数字作者ID/数字文章ID。不要编造，不输出摘要，只列搜索得到的原文链接和标题。",
                    "tools": [{"type": "web_search", "filters": {"allowed_domains": [domain]}}],
                    "tool_choice": "required", "include": ["web_search_call.action.sources"], "max_output_tokens": 3000}
+        if os.environ.get('PROBE_UNFILTERED') == 'true':
+            payload['tools'] = [{'type': 'web_search'}]
         report = {"source": source, "model": model, "http_status": 0}
         try:
             req = request.Request(endpoint, headers=headers, method='POST', data=json.dumps(payload).encode())
@@ -53,6 +58,30 @@ def main():
             if len(raw) > 2 * 1024 * 1024:
                 raise ValueError
             data = json.loads(raw)
+            actions, generated = [], []
+            for item in data.get('output', []):
+                if not isinstance(item, dict):
+                    continue
+                if item.get('type') == 'web_search_call' and isinstance(item.get('action'), dict):
+                    action = item['action']
+                    small = {'type': action.get('type') if action.get('type') in {'search', 'open_page', 'find_in_page'} else 'other'}
+                    if isinstance(action.get('query'), str):
+                        small['query'] = action['query'][:500]
+                    if isinstance(action.get('queries'), list):
+                        small['queries'] = [query[:500] for query in action['queries'][:5] if isinstance(query, str)]
+                    actions.append(small)
+                if item.get('type') == 'message':
+                    for part in item.get('content', []):
+                        if isinstance(part, dict) and isinstance(part.get('text'), str):
+                            for url in re.findall(r'https://(?:www\.|mobile\.)?(?:x\.com|twitter\.com)/[^\s<>"\x27]+', part['text']):
+                                try:
+                                    candidate = canonical_post_url(url.rstrip(').,;]）'))[0]
+                                    if candidate not in generated:
+                                        generated.append(candidate)
+                                except (ValueError, TypeError):
+                                    continue
+            report['tool_actions'] = actions[:8]
+            report['unverified_generated_candidates'] = generated[:10]
             records, report['search_status'] = _metadata_records(data)
             report['metadata_records'] = len(records)
             hosts = Counter()
@@ -85,6 +114,12 @@ def main():
                     continue
             report['candidate_count'] = len(accepted)
             report['candidates'] = list(accepted.values())[:10]
+            if source == 'X':
+                to_read = list(dict.fromkeys([*accepted, *generated]))[:5]
+                verified = fetch_verified_posts(to_read, now=now, limit=5) if to_read else []
+                report['officially_verified'] = [{'url': row['url'], 'author': row['author'],
+                    'published_at': row['published_at'], 'text_characters': len(row['text']),
+                    'excerpt': row['text'][:400]} for row in verified]
         except error.HTTPError as exc:
             report['http_status'] = exc.code
             report.update(_request_error_details(exc, (key, base)))

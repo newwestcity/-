@@ -225,6 +225,8 @@ def _daily(settings, seen, now):
                 if (isinstance(failures, dict) and set(failures) <= allowed
                         and all(type(n) is int and 0 <= n <= len(settings["categories"]) for n in failures.values())):
                     diagnostics["x_search_failures"] = failures
+                    if set(failures) == {"no_sources"}:
+                        source_status["X"] = "no_candidates"
             except (ValueError, TypeError):
                 pass
         try:

@@ -16,6 +16,7 @@ jobs:
       DIGEST_API_KEY: ${{ secrets.DIGEST_API_KEY }}
       DIGEST_SEARCH_MODEL: gpt-6.1-sol
       PROBE_SOURCE: X
+      PROBE_UNFILTERED: 'true'
       DIGEST_MODEL: ${{ vars.DIGEST_MODEL || 'gpt-6-luna' }}
       SMTP_USERNAME: preview@example.invalid
       GH_TOKEN: ${{ github.token }}
@@ -52,7 +53,7 @@ jobs:
           retention-days: 7
           if-no-files-found: ignore
   public:
-    if: false # 官方时间线返回429，不重复请求
+    if: contains(github.event.head_commit.message, '[probe-search-repair]')
     runs-on: ubuntu-latest
     timeout-minutes: 4
     steps:
@@ -62,5 +63,5 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
         with:
           python-version: '3.12'
-      - name: 验证官方公开时间线（正常匿名访问，不绕过挑战）
-        run: python scripts/probe_official_timelines.py
+      - name: 验证其他正常公开来源（不绕过挑战）
+        run: python scripts/probe_x_alternatives.py
